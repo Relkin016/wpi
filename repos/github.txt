@@ -1,0 +1,15 @@
+https://github.com/rustdesk/rustdesk
+https://github.com/localsend/localsend
+https://github.com/p-lider/WuaCpuFix
+https://github.com/sysprogs/WinCDEmu
+https://github.com/ip7z/7zip
+https://github.com/audacious-media-player/audacious
+https://github.com/ModuleArt/quick-picture-viewer
+https://github.com/notepad-plus-plus/notepad-plus-plus
+https://github.com/Open-Shell/Open-Shell-Menu
+https://github.com/namazso/OpenHashTab
+https://github.com/agalwood/Motrix
+
+# Need build:
+# https://github.com/videolan/vlc
+# https://github.com/qbittorrent/qBittorrent
