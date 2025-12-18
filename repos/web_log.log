@@ -7,7 +7,7 @@ https://epicgames-download1.akamaized.net/Builds/UnrealEngineLauncher/Installers
 # MSI Afterburner (needs to be unzipped)
 https://download-2.msi.com/uti_exe/vga/MSIAfterburnerSetup.zip?__token__=exp=1766026964~acl=/*~hmac=c34ea520fd0b69778f68d2429d75230d44d8d28c0ba5406f35ca9d33c6e7e877
 
-# Fraps (ver needs to be parsed from site https://fraps.com/download.php)
+# Fraps
 https://beepa.com/free/setup.exe
 
 # Telegram
@@ -16,7 +16,6 @@ https://td.telegram.org/tsetup/tsetup.6.3.9.exe
 
 # Qbittorrent
 https://sourceforge.net/projects/qbittorrent/files/qbittorrent-win32/qbittorrent-5.1.4/qbittorrent_5.1.4_x64_setup.exe/download
-
 
 
 # не отследить
