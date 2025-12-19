@@ -16,11 +16,11 @@ pipeline {
                 script {
                     echo "Cleaning up workspace..."
                     sh "mkdir -p ${env.DL_DIR}"
+		    sh "rm -rf tmp/donwloads/*"
                     sh "rm -f ${env.DL_DIR}/*.new"
                     sh "rm -f ${env.DL_DIR}/*.html"
-                    sh "rm -rf downloads/*" //DEV FEATURE ONLY
-		    if (!fileExists(env.LOG_FILE)) {
-                    sh "touch ${env.LOG_FILE}"
+                    if (!fileExists(env.LOG_FILE)) {
+                        sh "touch ${env.LOG_FILE}"
                     }
                 }
             }
@@ -44,21 +44,20 @@ pipeline {
 
                         echo ">>> Checking: ${repo}"
 
-                        // ФИКС 1: Добавлены одинарные кавычки вокруг 'User-Agent: ...'
-                        // Чтобы скобки (Windows...) не ломали bash
+                        // ФИКС: Одинарные кавычки вокруг хедера, чтобы bash не падал от скобок (Windows NT...)
                         def jsonResponse = sh(script: "curl -s -H 'User-Agent: ${env.UA}' https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
 
-                        // ФИКС 2: Проверка на лимиты (Error)
+                        // Проверка на лимиты API
                         if (jsonResponse.contains("API rate limit exceeded")) {
-                            error "GITHUB API LIMIT EXCEEDED! Please wait an hour or add a Token. Response: \n${jsonResponse}"
+                            error "GITHUB API LIMIT EXCEEDED! Response: \n${jsonResponse}"
                         }
 
                         def latestVersion = sh(script: "echo '${jsonResponse}' | jq -r .tag_name", returnStdout: true).trim()
 
-                        // Проверка на ошибки парсинга (если репо не найден или нет релизов)
+                        // Проверка на ошибки (репо не найден или нет релизов)
                         if (!latestVersion || latestVersion == "null") {
                             echo "JSON Response: ${jsonResponse}"
-                            error "Failed to get version for ${repo}. Check if repo exists and has releases."
+                            error "Failed to get version for ${repo}. Check regex or repo existence."
                         }
 
                         def currentVersion = sh(script: "grep '^${repo}|' ${env.LOG_FILE} | cut -d '|' -f 2 || echo '0'", returnStdout: true).trim()
@@ -71,7 +70,6 @@ pipeline {
                                 jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
                             """, returnStdout: true).trim()
 
-                            // ФИКС 3: Ошибка если файлы не найдены по Regex
                             if (downloadUrls && downloadUrls != "null") {
                                 def urls = downloadUrls.split('\n')
                                 urls.each { dUrl ->
@@ -93,8 +91,7 @@ pipeline {
                                 sh "echo '${repo}|${latestVersion}|${dateNow}' >> ${env.LOG_FILE}"
                                 
                             } else {
-                                // БЛОКИРУЮЩАЯ ОШИБКА
-                                error "CRITICAL: Version changed for ${repo}, but NO files matched regex: '${regex}'. Check your pattern!"
+                                error "CRITICAL: Version changed for ${repo}, but NO files matched regex: '${regex}'"
                             }
                         } else {
                             echo "No updates for ${repo}"
@@ -166,11 +163,7 @@ pipeline {
                                  mode = "SMART"
                              }
                         }
-                        // --- 6. OPENVPN ---
-                        /* else if (line.contains("openvpn.net")) {
-                             // Disabled
-                        } */
-                        // --- 7. SOURCEFORGE (qBit + HWInfo) ---
+                        // --- 6. SOURCEFORGE (qBit + HWInfo) ---
                         else if (line.contains("qbittorrent.org") || line.contains("hwinfo.com")) {
                             echo ">>> Parsing SourceForge..."
                             def rssLink = ""
@@ -192,7 +185,7 @@ pipeline {
                                 }
                             }
                         }
-                        // --- 8. HASH CHECK ---
+                        // --- 7. HASH CHECK (Остальные + OpenVPN) ---
                         else {
                             urls.add(line.trim())
                             mode = "HASH"
@@ -201,8 +194,10 @@ pipeline {
                         // --- ЗАГРУЗКА ---
                         urls.each { dUrl ->
                             if (!dUrl) return
+                            
                             def fname = ""
                             def cleanUrl = ""
+                            
                             if (dUrl.contains("?name=")) {
                                 def parts = dUrl.split("\\?name=")
                                 cleanUrl = parts[0]
@@ -213,6 +208,7 @@ pipeline {
                                 fname = java.net.URLDecoder.decode(rawName, "UTF-8")
                             }
 
+                            // Headers
                             def headers = "-A '${env.UA}' -L"
                             if (cleanUrl.contains("techpowerup.com")) headers += " -e 'https://www.techpowerup.com/'"
 
@@ -234,15 +230,17 @@ pipeline {
                                     }
                                 }
                             } else {
-                                // HASH CHECK
+                                // HASH CHECK MODE (Тут будет обрабатываться OpenVPN)
                                 echo "   [HASH CHECK] ${fname}..."
                                 sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}.new' '${cleanUrl}'"
+                                
                                 def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}.new'", returnStdout: true).trim()
                                 if (fSize == "0" || fSize.toInteger() < 10000) {
                                     sh "rm '${env.DL_DIR}/${fname}.new'"
                                 } else {
                                     def newHash = sh(script: "sha256sum '${env.DL_DIR}/${fname}.new' | awk '{print \$1}'", returnStdout: true).trim()
                                     def oldHash = sh(script: "grep '|${fname}|' ${env.LOG_FILE} | tail -n 1 | cut -d '|' -f 3 || echo 'none'", returnStdout: true).trim()
+                                    
                                     if (newHash != oldHash) {
                                         echo "   [UPDATE] Hash mismatch! Updating..."
                                         sh "mv '${env.DL_DIR}/${fname}.new' '${env.DL_DIR}/${fname}'"
