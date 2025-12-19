@@ -1,0 +1,29 @@
+1. Добавить описание и т.д. прогам
+2. Добавить сравнение по хешам
+
+
+ISO build:
+распаковка Wpi.zip
+закинуть файлы по папкам
+редактирование config.js (генерация текста с 0)
+описание програм и т.д. будут в отдельном файле (файл для генерации config.js)
+
+feature:
+
+
+
+Deploy to site:
+deploy to drive
+get link
+deploy log to github
+deploy link to github pages
+
+
+
+epicgames
+qbittorrent
+hwinfo
+openvpn
+firefox
+nvcleaninstall
+visualc++

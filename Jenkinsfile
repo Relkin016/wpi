@@ -16,7 +16,7 @@ pipeline {
                 script {
                     echo "Cleaning up workspace..."
                     sh "mkdir -p ${env.DL_DIR}"
-                    // Чистим временные файлы, оставляем готовые инсталляторы
+                    // Чистим временные файлы
                     sh "rm -f ${env.DL_DIR}/*.new"
                     sh "rm -f ${env.DL_DIR}/*.html"
                     if (!fileExists(env.LOG_FILE)) {
@@ -128,11 +128,12 @@ pipeline {
                         }
 
                         // --- 3. EPIC GAMES ---
+                        // Ищет ссылку на инсталлер (api)
                         else if (line.contains("epicgames.com")) {
                             echo ">>> Parsing Epic Games..."
-                            def rawUrl = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
+                            // Добавил User-Agent, так как Epic может блочить пустые запросы
+                            def rawUrl = sh(script: "curl -s -A '${env.UA}' -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
                             if (rawUrl) {
-                                // Отрезаем мусор после '?'
                                 urls.add(rawUrl.split('\\?')[0])
                                 mode = "SMART"
                             }
@@ -143,7 +144,6 @@ pipeline {
                             echo ">>> Parsing Firefox..."
                             def rawUrl = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=ru'", returnStdout: true).trim()
                             if (rawUrl) {
-                                // Меняем %20 на точки в имени файла (Firefox%20Setup -> Firefox.Setup)
                                 def oldName = rawUrl.split('/').last()
                                 def newName = sh(script: "echo '${oldName}' | sed 's/%20/./g'", returnStdout: true).trim()
                                 urls.add("${rawUrl}?name=${newName}")
@@ -156,7 +156,8 @@ pipeline {
                              echo ">>> Parsing Fraps..."
                              def frapsVer = sh(script: "curl -s https://fraps.com/download.php | grep -oP 'Fraps \\K[0-9.]+' | head -n 1", returnStdout: true).trim()
                              if (frapsVer) {
-                                 urls.add("https://beepa.com/free/setup.exe?name=FRAPS-${frapsVer}-setup.exe")
+                                 // ФИКС: название с маленькой буквы
+                                 urls.add("https://beepa.com/free/setup.exe?name=fraps-${frapsVer}-setup.exe")
                                  mode = "SMART"
                              }
                         }
@@ -164,8 +165,9 @@ pipeline {
                         // --- 6. OPENVPN ---
                         else if (line.contains("openvpn.net")) {
                             echo ">>> Parsing OpenVPN..."
-                            // Ленивый поиск: любой MSI, в ссылке есть 'openvpn' и 'x64'
-                            def vpnUrl = sh(script: "curl -s -L 'https://openvpn.net/client/' | grep -oP 'href=\"\\K[^\"]+\\.msi' | grep 'openvpn' | grep 'x64' | head -n 1", returnStdout: true).trim()
+                            // ФИКС: Добавлен ключ -k (insecure) на случай проблем с SSL и -L
+                            // Ищем на странице /client/ любую ссылку .msi
+                            def vpnUrl = sh(script: "curl -s -k -L -A '${env.UA}' 'https://openvpn.net/client/' | grep -oP 'href=\"\\K[^\"]+\\.msi' | grep 'openvpn' | grep 'x64' | head -n 1", returnStdout: true).trim()
                             if (vpnUrl) {
                                 if (vpnUrl.startsWith("/")) vpnUrl = "https://openvpn.net" + vpnUrl
                                 urls.add(vpnUrl)
@@ -174,7 +176,6 @@ pipeline {
                         }
 
                         // --- 7. SOURCEFORGE (qBittorrent + HWInfo) ---
-                        // Используем метод: Скачать HTML -> Найти прямую ссылку
                         else if (line.contains("qbittorrent.org") || line.contains("hwinfo.com")) {
                             echo ">>> Parsing SourceForge (qBit/HWInfo)..."
                             
@@ -182,36 +183,26 @@ pipeline {
                             if (line.contains("qbittorrent")) rssLink = "https://sourceforge.net/projects/qbittorrent/rss?path=/qbittorrent-win32"
                             if (line.contains("hwinfo")) rssLink = "https://sourceforge.net/projects/hwinfo/rss"
 
-                            // 1. Берем ссылку с таймером из RSS
                             def webUrl = sh(script: "curl -s '${rssLink}' | grep -o 'https://[^\"<]*\\(x64_setup\\|hwi64_[0-9]\\+\\)\\.exe/download' | head -n 1", returnStdout: true).trim()
                             
                             if (webUrl) {
-                                // 2. Качаем HTML страницы с таймером во временный файл
                                 sh "curl -L -s -A '${env.UA}' -o 'tmp/sf_temp.html' '${webUrl}'"
-                                
-                                // 3. Выдираем прямую ссылку downloads.sourceforge.net
                                 def directUrl = sh(script: "grep -oP 'https://downloads\\.sourceforge\\.net/[^\"]+' tmp/sf_temp.html | head -n 1", returnStdout: true).trim()
-                                
-                                // Чистим за собой
                                 sh "rm -f tmp/sf_temp.html"
 
                                 if (directUrl) {
                                     def fName = webUrl.replace("/download", "").split('/').last()
-                                    // Если это HWInfo, убираем точки из версии на всякий случай
-                                    if (line.contains("hwinfo")) fName = fName.replace(".", "") 
+                                    // ФИКС HWInfo: удаляем точки только из тела имени, а .exe возвращаем
+                                    if (line.contains("hwinfo")) {
+                                         // hwi64_8.16.exe -> hwi64_816.exe
+                                         fName = fName.replace(".exe", "").replace(".", "") + ".exe"
+                                    }
                                     
                                     urls.add("${directUrl}?name=${fName}")
                                     mode = "SMART"
                                 }
                             }
                         }
-
-                        // --- 8. TECHPOWERUP (ОТКЛЮЧЕНО ПО ЗАПРОСУ) ---
-                        /* else if (line.contains("techpowerup.com")) {
-                            echo ">>> Parsing TechPowerUp (DISABLED)..."
-                            // Логика закомментирована
-                        }
-                        */
 
                         // --- 9. HASH CHECK (Остальные) ---
                         else {
@@ -238,10 +229,7 @@ pipeline {
                                 fname = java.net.URLDecoder.decode(rawName, "UTF-8")
                             }
 
-                            // Headers
                             def headers = "-A '${env.UA}' -L"
-                            
-                            // Если вдруг попадутся ссылки TPU, добавляем Referer, чтобы хоть как-то работало
                             if (cleanUrl.contains("techpowerup.com")) {
                                 headers += " -e 'https://www.techpowerup.com/'"
                             }
@@ -253,7 +241,7 @@ pipeline {
                                     echo "   [DOWN] Downloading ${fname}..."
                                     sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
                                     
-                                    // Проверка размера (защита от HTML-ошибок)
+                                    // Проверка размера
                                     def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}'", returnStdout: true).trim()
                                     if (fSize == "0" || fSize.toInteger() < 10000) {
                                         echo "   [FAIL] File too small (${fSize} bytes). Deleting."

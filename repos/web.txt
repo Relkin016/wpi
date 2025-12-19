@@ -1,18 +1,14 @@
-# --- СЕКЦИЯ ПАРСЕРОВ ---
-# Скрипт ищет эти вхождения в URL и запускает соответствующую логику
+# === SMART PARSERS ===
 https://www.videolan.org/vlc/
-https://telegram.org/
-https://www.hwinfo.com/
-https://www.qbittorrent.org/
-http://www.fraps.com/download.php
-# https://www.techpowerup.com/download/techpowerup-nvcleanstall/
-# https://www.techpowerup.com/download/visual-c-redistributable-runtime-package-all-in-one/
-https://www.mozilla.org/ru/firefox/all/
+https://telegram.org/dl/desktop/win64
+https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi
+https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=ru
+https://fraps.com/download.php
 https://openvpn.net/client/
+https://www.qbittorrent.org/
+https://www.hwinfo.com/
 
-
-# --- СЕКЦИЯ ПРЯМЫХ ССЫЛОК (HASH CHECK) ---
-# Для этих ссылок скрипт будет каждый раз скачивать файл .new и сверять хеш-сумму
+# === HASH CHECKS (Прямые ссылки) ===
 https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe
-https://download.revouninstaller.com/download/revosetup.exe
-https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicG
+https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
+# TechPowerUp пока отключен, его тут нет
