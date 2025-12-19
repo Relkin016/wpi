@@ -19,6 +19,7 @@ pipeline {
                     // Чистим временные файлы
                     sh "rm -f ${env.DL_DIR}/*.new"
                     sh "rm -f ${env.DL_DIR}/*.html"
+		    sh "rm -rf downloads/*"	// ONLY 4 DEV BRANCH!
                     if (!fileExists(env.LOG_FILE)) {
                         sh "touch ${env.LOG_FILE}"
                     }
