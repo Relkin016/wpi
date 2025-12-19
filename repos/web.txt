@@ -5,9 +5,9 @@ https://telegram.org/
 https://www.hwinfo.com/
 https://www.qbittorrent.org/
 https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi
+http://www.fraps.com/download.php
 
 # --- СЕКЦИЯ ПРЯМЫХ ССЫЛОК (HASH CHECK) ---
 # Для этих ссылок скрипт будет каждый раз скачивать файл .new и сверять хеш-сумму
 https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe
 https://download.revouninstaller.com/download/revosetup.exe
-https://beepa.com/free/setup.exe
