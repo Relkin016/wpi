@@ -6,7 +6,7 @@ pipeline {
         LOG_FILE = "repos/web_log.log"
         GITHUB_LIST = "repos/github.txt"
         WEB_LIST = "repos/web.txt"
-        // Глобальный User-Agent (обязателен для SourceForge, HWInfo, Epic)
+        // Глобальный User-Agent
         UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
@@ -16,17 +16,17 @@ pipeline {
                 script {
                     echo "Cleaning up workspace..."
                     sh "mkdir -p ${env.DL_DIR}"
-                    // Чистим временные файлы
                     sh "rm -f ${env.DL_DIR}/*.new"
                     sh "rm -f ${env.DL_DIR}/*.html"
-		    sh "rm -rf downloads/*"	// ONLY 4 DEV BRANCH!
-                    if (!fileExists(env.LOG_FILE)) {
-                        sh "touch ${env.LOG_FILE}"
+                    sh "rm -rf downloads/*" //DEV FEATURE ONLY
+		    if (!fileExists(env.LOG_FILE)) {
+                    sh "touch ${env.LOG_FILE}"
                     }
                 }
             }
         }
-	stage('Checking GitHub') {
+
+        stage('Checking GitHub') {
             steps {
                 echo "Starting GitHub checks..."
                 script {
@@ -44,18 +44,21 @@ pipeline {
 
                         echo ">>> Checking: ${repo}"
 
-                        // 1. Сначала получаем сырой JSON ответ
-                        // ВАЖНО: Добавил User-Agent (-H), без него GitHub может отвергать запросы
+                        // ФИКС 1: Добавлены одинарные кавычки вокруг 'User-Agent: ...'
+                        // Чтобы скобки (Windows...) не ломали bash
                         def jsonResponse = sh(script: "curl -s -H 'User-Agent: ${env.UA}' https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
 
-                        // 2. Пробуем вытащить тег
+                        // ФИКС 2: Проверка на лимиты (Error)
+                        if (jsonResponse.contains("API rate limit exceeded")) {
+                            error "GITHUB API LIMIT EXCEEDED! Please wait an hour or add a Token. Response: \n${jsonResponse}"
+                        }
+
                         def latestVersion = sh(script: "echo '${jsonResponse}' | jq -r .tag_name", returnStdout: true).trim()
 
-                        // 3. Если тег пустой или null — выводим ошибку, которую вернул GitHub
+                        // Проверка на ошибки парсинга (если репо не найден или нет релизов)
                         if (!latestVersion || latestVersion == "null") {
-                            echo "!!! ERROR checking ${repo}. Response from GitHub:"
-                            echo jsonResponse // <-- Тут мы увидим "API rate limit exceeded"
-                            return 
+                            echo "JSON Response: ${jsonResponse}"
+                            error "Failed to get version for ${repo}. Check if repo exists and has releases."
                         }
 
                         def currentVersion = sh(script: "grep '^${repo}|' ${env.LOG_FILE} | cut -d '|' -f 2 || echo '0'", returnStdout: true).trim()
@@ -63,12 +66,12 @@ pipeline {
                         if (latestVersion != currentVersion) {
                             echo "UPDATE FOUND for ${repo}: ${currentVersion} -> ${latestVersion}"
                             
-                            // Парсим URL для скачивания
                             def downloadUrls = sh(script: """
                                 echo '${jsonResponse}' | \
                                 jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
                             """, returnStdout: true).trim()
 
+                            // ФИКС 3: Ошибка если файлы не найдены по Regex
                             if (downloadUrls && downloadUrls != "null") {
                                 def urls = downloadUrls.split('\n')
                                 urls.each { dUrl ->
@@ -76,7 +79,6 @@ pipeline {
                                     echo "   + Downloading: ${fileName}"
                                     sh "wget -qP ${env.DL_DIR} ${dUrl}"
                                     
-                                    // АВТО-РАСПАКОВКА ZIP
                                     if (fileName.endsWith(".zip")) {
                                         def folderName = fileName.replace('.zip', '')
                                         echo "   [UNZIP] Extracting into ${folderName}..."
@@ -91,7 +93,8 @@ pipeline {
                                 sh "echo '${repo}|${latestVersion}|${dateNow}' >> ${env.LOG_FILE}"
                                 
                             } else {
-                                echo "   ! Version changed, but NO files matched regex: ${regex}"
+                                // БЛОКИРУЮЩАЯ ОШИБКА
+                                error "CRITICAL: Version changed for ${repo}, but NO files matched regex: '${regex}'. Check your pattern!"
                             }
                         } else {
                             echo "No updates for ${repo}"
@@ -101,7 +104,7 @@ pipeline {
             }
         }
 
-	stage('Checking Web') {
+        stage('Checking Web') {
             steps {
                 echo "Starting Web checks..."
                 script {
@@ -115,37 +118,25 @@ pipeline {
                         def urls = [] 
                         def mode = "HASH"
 
-                        // ===========================
-                        //        БЛОК ПАРСЕРОВ
-                        // ===========================
-
-                        // --- 1. VLC (x64 + x86) ---
+                        // --- 1. VLC ---
                         if (line.contains("videolan.org")) {
                             echo ">>> Parsing VLC..."
-                            // Win64
                             def v64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win64\\.exe' | head -n 1", returnStdout: true).trim()
                             if (v64) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win64/${v64}")
                             
-                            // Win32 (x86) - ВЕРНУЛ НА МЕСТО
                             def v32 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win32/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win32\\.exe' | head -n 1", returnStdout: true).trim()
                             if (v32) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win32/${v32}")
-                            
                             mode = "SMART"
                         } 
-
-                        // --- 2. TELEGRAM (x64 + x86) ---
+                        // --- 2. TELEGRAM ---
                         else if (line.contains("telegram.org")) {
                             echo ">>> Parsing Telegram..."
-                            // Win64
                             def tg64 = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://telegram.org/dl/desktop/win64'", returnStdout: true).trim()
                             if (tg64) urls.add(tg64)
-                            // Win32
                             def tg32 = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://telegram.org/dl/desktop/win'", returnStdout: true).trim()
                             if (tg32) urls.add(tg32)
-                            
                             mode = "SMART"
                         }
-
                         // --- 3. EPIC GAMES ---
                         else if (line.contains("epicgames.com")) {
                             echo ">>> Parsing Epic Games..."
@@ -155,7 +146,6 @@ pipeline {
                                 mode = "SMART"
                             }
                         }
-
                         // --- 4. FIREFOX ---
                         else if (line.contains("mozilla.org")) {
                             echo ">>> Parsing Firefox..."
@@ -167,7 +157,6 @@ pipeline {
                                 mode = "SMART"
                             }
                         }
-
                         // --- 5. FRAPS ---
                         else if (line.contains("fraps.com")) {
                              echo ">>> Parsing Fraps..."
@@ -177,17 +166,13 @@ pipeline {
                                  mode = "SMART"
                              }
                         }
-
-                        // --- 6. OPENVPN (ОТЛОЖЕНО) ---
+                        // --- 6. OPENVPN ---
                         /* else if (line.contains("openvpn.net")) {
-                           // Логика отключена по запросу
-                        }
-                        */
-
-                        // --- 7. SOURCEFORGE (qBittorrent + HWInfo) ---
+                             // Disabled
+                        } */
+                        // --- 7. SOURCEFORGE (qBit + HWInfo) ---
                         else if (line.contains("qbittorrent.org") || line.contains("hwinfo.com")) {
-                            echo ">>> Parsing SourceForge (qBit/HWInfo)..."
-                            
+                            echo ">>> Parsing SourceForge..."
                             def rssLink = ""
                             if (line.contains("qbittorrent")) rssLink = "https://sourceforge.net/projects/qbittorrent/rss?path=/qbittorrent-win32"
                             if (line.contains("hwinfo")) rssLink = "https://sourceforge.net/projects/hwinfo/rss"
@@ -201,32 +186,23 @@ pipeline {
 
                                 if (directUrl) {
                                     def fName = webUrl.replace("/download", "").split('/').last()
-                                    // HWInfo fix (remove dots from name body, keep extension)
-                                    if (line.contains("hwinfo")) {
-                                         fName = fName.replace(".exe", "").replace(".", "") + ".exe"
-                                    }
-                                    
+                                    if (line.contains("hwinfo")) fName = fName.replace(".exe", "").replace(".", "") + ".exe"
                                     urls.add("${directUrl}?name=${fName}")
                                     mode = "SMART"
                                 }
                             }
                         }
-
-                        // --- 8. HASH CHECK (Остальные + OpenVPN попадет сюда) ---
+                        // --- 8. HASH CHECK ---
                         else {
                             urls.add(line.trim())
                             mode = "HASH"
                         }
 
-                        // ===========================
-                        //       БЛОК ЗАГРУЗКИ
-                        // ===========================
+                        // --- ЗАГРУЗКА ---
                         urls.each { dUrl ->
                             if (!dUrl) return
-                            
                             def fname = ""
                             def cleanUrl = ""
-                            
                             if (dUrl.contains("?name=")) {
                                 def parts = dUrl.split("\\?name=")
                                 cleanUrl = parts[0]
@@ -238,9 +214,7 @@ pipeline {
                             }
 
                             def headers = "-A '${env.UA}' -L"
-                            if (cleanUrl.contains("techpowerup.com")) {
-                                headers += " -e 'https://www.techpowerup.com/'"
-                            }
+                            if (cleanUrl.contains("techpowerup.com")) headers += " -e 'https://www.techpowerup.com/'"
 
                             if (mode == "SMART") {
                                 if (fileExists("${env.DL_DIR}/${fname}")) {
@@ -251,7 +225,7 @@ pipeline {
                                     
                                     def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}'", returnStdout: true).trim()
                                     if (fSize == "0" || fSize.toInteger() < 10000) {
-                                        echo "   [FAIL] File too small (${fSize} bytes). Deleting."
+                                        echo "   [FAIL] File too small. Deleting."
                                         sh "rm '${env.DL_DIR}/${fname}'"
                                     } else {
                                         def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
@@ -260,17 +234,15 @@ pipeline {
                                     }
                                 }
                             } else {
-                                // HASH CHECK MODE
+                                // HASH CHECK
                                 echo "   [HASH CHECK] ${fname}..."
                                 sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}.new' '${cleanUrl}'"
-                                
                                 def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}.new'", returnStdout: true).trim()
                                 if (fSize == "0" || fSize.toInteger() < 10000) {
                                     sh "rm '${env.DL_DIR}/${fname}.new'"
                                 } else {
                                     def newHash = sh(script: "sha256sum '${env.DL_DIR}/${fname}.new' | awk '{print \$1}'", returnStdout: true).trim()
                                     def oldHash = sh(script: "grep '|${fname}|' ${env.LOG_FILE} | tail -n 1 | cut -d '|' -f 3 || echo 'none'", returnStdout: true).trim()
-                                    
                                     if (newHash != oldHash) {
                                         echo "   [UPDATE] Hash mismatch! Updating..."
                                         sh "mv '${env.DL_DIR}/${fname}.new' '${env.DL_DIR}/${fname}'"
@@ -287,6 +259,5 @@ pipeline {
                 }
             }
         }
-
     }
 }
