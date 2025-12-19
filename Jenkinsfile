@@ -6,8 +6,8 @@ pipeline {
         LOG_FILE = "repos/web_log.log"
         GITHUB_LIST = "repos/github.txt"
         WEB_LIST = "repos/web.txt"
-        // Глобальный User-Agent
-        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        // ФИКС: Убрал скобки (), чтобы bash не сходил с ума. Это решает ошибку "Syntax error"
+        UA = "Mozilla/5.0 Windows NT 10.0 Win64 x64"
     }
 
     stages {
@@ -15,8 +15,8 @@ pipeline {
             steps {
                 script {
                     echo "Cleaning up workspace..."
-                    sh "mkdir -p ${env.DL_DIR}"
 		    sh "rm -rf tmp/donwloads/*"
+                    sh "mkdir -p ${env.DL_DIR}"
                     sh "rm -f ${env.DL_DIR}/*.new"
                     sh "rm -f ${env.DL_DIR}/*.html"
                     if (!fileExists(env.LOG_FILE)) {
@@ -44,20 +44,20 @@ pipeline {
 
                         echo ">>> Checking: ${repo}"
 
-                        // ФИКС: Одинарные кавычки вокруг хедера, чтобы bash не падал от скобок (Windows NT...)
+                        // Получаем JSON. Одинарные кавычки вокруг UA на всякий случай оставлены.
                         def jsonResponse = sh(script: "curl -s -H 'User-Agent: ${env.UA}' https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
 
-                        // Проверка на лимиты API
+                        // 1. ПРОВЕРКА ЛИМИТОВ (КРАСНАЯ ОШИБКА)
                         if (jsonResponse.contains("API rate limit exceeded")) {
-                            error "GITHUB API LIMIT EXCEEDED! Response: \n${jsonResponse}"
+                            error "GITHUB API LIMIT EXCEEDED! (Wait 1 hour or add Token). Server Response: \n${jsonResponse}"
                         }
 
                         def latestVersion = sh(script: "echo '${jsonResponse}' | jq -r .tag_name", returnStdout: true).trim()
 
-                        // Проверка на ошибки (репо не найден или нет релизов)
+                        // 2. ПРОВЕРКА НА ОШИБКИ ПОЛУЧЕНИЯ ВЕРСИИ
                         if (!latestVersion || latestVersion == "null") {
                             echo "JSON Response: ${jsonResponse}"
-                            error "Failed to get version for ${repo}. Check regex or repo existence."
+                            error "Failed to get version for ${repo}. Check if repo exists and has releases."
                         }
 
                         def currentVersion = sh(script: "grep '^${repo}|' ${env.LOG_FILE} | cut -d '|' -f 2 || echo '0'", returnStdout: true).trim()
@@ -70,6 +70,7 @@ pipeline {
                                 jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
                             """, returnStdout: true).trim()
 
+                            // 3. ПРОВЕРКА НА СОВПАДЕНИЕ ПАТТЕРНА (КРАСНАЯ ОШИБКА)
                             if (downloadUrls && downloadUrls != "null") {
                                 def urls = downloadUrls.split('\n')
                                 urls.each { dUrl ->
@@ -91,7 +92,8 @@ pipeline {
                                 sh "echo '${repo}|${latestVersion}|${dateNow}' >> ${env.LOG_FILE}"
                                 
                             } else {
-                                error "CRITICAL: Version changed for ${repo}, but NO files matched regex: '${regex}'"
+                                // Если версия новая, но файл по регулярке не найден — падаем
+                                error "CRITICAL: New version found for ${repo}, but NO files matched regex: '${regex}'. Check your pattern!"
                             }
                         } else {
                             echo "No updates for ${repo}"
@@ -185,7 +187,7 @@ pipeline {
                                 }
                             }
                         }
-                        // --- 7. HASH CHECK (Остальные + OpenVPN) ---
+                        // --- 7. HASH CHECK (Остальные + OpenVPN по прямой ссылке) ---
                         else {
                             urls.add(line.trim())
                             mode = "HASH"
@@ -230,7 +232,7 @@ pipeline {
                                     }
                                 }
                             } else {
-                                // HASH CHECK MODE (Тут будет обрабатываться OpenVPN)
+                                // HASH CHECK MODE
                                 echo "   [HASH CHECK] ${fname}..."
                                 sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}.new' '${cleanUrl}'"
                                 
