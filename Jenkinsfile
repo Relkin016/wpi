@@ -6,7 +6,7 @@ pipeline {
         LOG_FILE = "repos/web_log.log"
         GITHUB_LIST = "repos/github.txt"
         WEB_LIST = "repos/web.txt"
-        // UA без скобок
+        // ВАЖНО: Без скобок, чтобы не ломать bash
         UA = "Mozilla/5.0 Windows NT 10.0 Win64 x64"
     }
 
@@ -43,10 +43,11 @@ pipeline {
 
                         echo ">>> Checking: ${repo}"
 
-                        // ФИКС: Используем экранированные двойные кавычки \"...\"
-                        // Это гарантирует, что Shell правильно увидит строку с пробелами
-                        def jsonResponse = sh(script: "curl -s -H \"User-Agent: ${env.UA}\" https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
+                        // ФИКС: Вернулись к одинарным кавычкам '...', так как в UA больше нет скобок
+                        // Это самая надежная конструкция для bash
+                        def jsonResponse = sh(script: "curl -s -H 'User-Agent: ${env.UA}' https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
 
+                        // Проверка на лимиты API
                         if (jsonResponse.contains("API rate limit exceeded")) {
                             error "GITHUB API LIMIT EXCEEDED! Response: \n${jsonResponse}"
                         }
@@ -135,8 +136,8 @@ pipeline {
                         // --- 3. EPIC GAMES ---
                         else if (line.contains("epicgames.com")) {
                             echo ">>> Parsing Epic Games..."
-                            // ФИКС: Экранированные кавычки для UA
-                            def rawUrl = sh(script: "curl -s -A \"${env.UA}\" -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
+                            // ФИКС: Одинарные кавычки '...'
+                            def rawUrl = sh(script: "curl -s -A '${env.UA}' -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
                             if (rawUrl) {
                                 urls.add(rawUrl.split('\\?')[0])
                                 mode = "SMART"
@@ -172,8 +173,8 @@ pipeline {
                             def webUrl = sh(script: "curl -s '${rssLink}' | grep -o 'https://[^\"<]*\\(x64_setup\\|hwi64_[0-9]\\+\\)\\.exe/download' | head -n 1", returnStdout: true).trim()
                             
                             if (webUrl) {
-                                // ФИКС: Экранированные кавычки для UA
-                                sh "curl -L -s -A \"${env.UA}\" -o 'tmp/sf_temp.html' '${webUrl}'"
+                                // ФИКС: Одинарные кавычки '...'
+                                sh "curl -L -s -A '${env.UA}' -o 'tmp/sf_temp.html' '${webUrl}'"
                                 def directUrl = sh(script: "grep -oP 'https://downloads\\.sourceforge\\.net/[^\"]+' tmp/sf_temp.html | head -n 1", returnStdout: true).trim()
                                 sh "rm -f tmp/sf_temp.html"
 
@@ -185,7 +186,7 @@ pipeline {
                                 }
                             }
                         }
-                        // --- 7. HASH CHECK (Остальные + OpenVPN по прямой ссылке) ---
+                        // --- 7. HASH CHECK (Остальные + OpenVPN) ---
                         else {
                             urls.add(line.trim())
                             mode = "HASH"
@@ -208,8 +209,8 @@ pipeline {
                                 fname = java.net.URLDecoder.decode(rawName, "UTF-8")
                             }
 
-                            // ФИКС: Формируем headers с экранированными кавычками
-                            def headers = "-A \"${env.UA}\" -L"
+                            // ФИКС: Одинарные кавычки для хедера
+                            def headers = "-A '${env.UA}' -L"
                             if (cleanUrl.contains("techpowerup.com")) headers += " -e 'https://www.techpowerup.com/'"
 
                             if (mode == "SMART") {
