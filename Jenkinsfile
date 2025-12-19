@@ -185,7 +185,7 @@ pipeline {
                                 }
                             }
                         }
-                        }
+                        
                         else if (line.contains("mozilla.org")) {
                             echo ">>> Parsing Firefox..."
                             def ff = sh(script: "curl -s -I 'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=ru' | grep -i 'location:' | awk '{print \$2}' | tr -d '\r'", returnStdout: true)
