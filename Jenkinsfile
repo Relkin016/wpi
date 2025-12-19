@@ -13,12 +13,16 @@ pipeline {
     stages {
         stage('Cleanup') {
             steps {
-                echo "Cleaning up workspace..."
-                sh "mkdir -p ${DL_DIR}"
-                // Чистим временные файлы, оставляем готовые инсталляторы
-                sh "rm -f ${DL_DIR}/*.new"
-                sh "rm -f ${DL_DIR}/*.html"
-                if (!fileExists(LOG_FILE)) sh "touch ${LOG_FILE}"
+                script {
+                    echo "Cleaning up workspace..."
+                    sh "mkdir -p ${env.DL_DIR}"
+                    // Чистим временные файлы, оставляем готовые инсталляторы
+                    sh "rm -f ${env.DL_DIR}/*.new"
+                    sh "rm -f ${env.DL_DIR}/*.html"
+                    if (!fileExists(env.LOG_FILE)) {
+                        sh "touch ${env.LOG_FILE}"
+                    }
+                }
             }
         }
 
@@ -64,7 +68,7 @@ pipeline {
                                     echo "   + Downloading: ${fileName}"
                                     sh "wget -qP ${env.DL_DIR} ${dUrl}"
                                     
-                                    // АВТО-РАСПАКОВКА ZIP (WuaCpuFix, VisualCpp и др)
+                                    // АВТО-РАСПАКОВКА ZIP
                                     if (fileName.endsWith(".zip")) {
                                         def folderName = fileName.replace('.zip', '')
                                         echo "   [UNZIP] Extracting into ${folderName}..."
