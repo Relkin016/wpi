@@ -23,20 +23,26 @@ pipeline {
 
                     lines.each { line ->
                         if (line.startsWith('#') || !line.trim()) return
+
                         def parts = line.split(';')
                         def url = parts[0].trim()
                         def regex = parts[1].trim()
                         def repo = url.replace("https://github.com/", "").replace(/\/$/, "")
+
                         echo ">>> Checking: ${repo}"
+
                         def latestVersion = sh(script: "curl -s https://api.github.com/repos/${repo}/releases/latest | jq -r .tag_name", returnStdout: true).trim()
-                        if (latestVersion == "null" || latestVersion == "") {
+
+                        if (!latestVersion || latestVersion == "null") {
                             echo "Error checking ${repo}. Skipping."
                             return 
                         }
 
                         def currentVersion = sh(script: "grep '^${repo}|' ${env.LOG_FILE} | cut -d '|' -f 2 || echo '0'", returnStdout: true).trim()
+
                         if (latestVersion != currentVersion) {
                             echo "UPDATE FOUND for ${repo}: ${currentVersion} -> ${latestVersion}"
+                            
                             def downloadUrls = sh(script: """
                                 curl -s https://api.github.com/repos/${repo}/releases/latest | \
                                 jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
@@ -44,23 +50,29 @@ pipeline {
 
                             if (downloadUrls && downloadUrls != "null") {
                                 def urls = downloadUrls.split('\n')
-                                
-				urls.each { dUrl ->
-                                    echo "   + Downloading: ${dUrl}"
+                                urls.each { dUrl ->
+                                    def fileName = dUrl.split('/').last()
+                                    echo "   + Downloading: ${fileName}"
                                     sh "wget -qP ${env.DL_DIR} ${dUrl}"
                                     
-                                    if (dUrl.endsWith(".zip")) {
-                                        echo "   [UNZIP] Extracting ${dUrl.split('/').last()}..."
-                                        sh "unzip -o ${env.DL_DIR}/${dUrl.split('/').last()} -d ${env.DL_DIR} && rm ${env.DL_DIR}/${dUrl.split('/').last()}"
+                                    // ЛОГИКА РАСПАКОВКИ В ПАПКУ
+                                    if (fileName.endsWith(".zip")) {
+                                        // Имя папки = имя файла без .zip
+                                        def folderName = fileName.replace('.zip', '')
+                                        echo "   [UNZIP] Extracting into ${folderName}..."
+                                        sh "mkdir -p ${env.DL_DIR}/${folderName}"
+                                        sh "unzip -o ${env.DL_DIR}/${fileName} -d ${env.DL_DIR}/${folderName}/"
+                                        sh "rm ${env.DL_DIR}/${fileName}"
                                     }
-                                }                                
-				sh "sed -i '\\#^${repo}|#d' ${env.LOG_FILE}"
-				def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
-				sh "echo '${repo}|${latestVersion}|${dateNow}' >> ${env.LOG_FILE}"                                
+                                }
+                                
+                                sh "sed -i '\\#^${repo}|#d' ${env.LOG_FILE}"
+                                def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
+                                sh "echo '${repo}|${latestVersion}|${dateNow}' >> ${env.LOG_FILE}"
+                                
                             } else {
                                 echo "   ! Version changed, but NO files matched regex: ${regex}"
-                            	exit 1
-				}
+                            }
                         } else {
                             echo "No updates for ${repo}"
                         }
@@ -69,33 +81,29 @@ pipeline {
             }
         }
 
-
 	stage('Checking Web') {
             steps {
                 echo "Starting Web checks..."
                 script {
-                    // Проверяем наличие файла
-                    if (!fileExists("repos/web.txt")) {
-                        error "File repos/web.txt not found!"
-                    }
+                    if (!fileExists("repos/web.txt")) error "File repos/web.txt not found!"
 
                     def lines = readFile("repos/web.txt").readLines()
                     
                     lines.each { line ->
-                        // Пропускаем пустые строки и комментарии
                         if (line.startsWith('#') || !line.trim()) return
                         
                         def urls = [] 
-                        def mode = "HASH" // По умолчанию HASH, если парсер не переопределит
+                        def mode = "HASH"
 
                         // --- ПАРСЕРЫ ---
 
                         if (line.contains("videolan.org")) {
                             echo ">>> Parsing VLC..."
-                            def v64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'vlc-.*-win64\\.exe' | head -n 1", returnStdout: true)
-                            def v32 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win32/ | grep -oP 'vlc-.*-win32\\.exe' | head -n 1", returnStdout: true)
+                            // ИСПРАВЛЕНО: Регулярка теперь берет строго цифры и точки, без лишнего мусора
+                            // \K отбрасывает href="
+                            def v64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win64\\.exe' | head -n 1", returnStdout: true)
+                            def v32 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win32/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win32\\.exe' | head -n 1", returnStdout: true)
                             
-                            // .trim() вызываем только если результат не null
                             if (v64) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win64/${v64.trim()}")
                             if (v32) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win32/${v32.trim()}")
                             mode = "SMART"
@@ -106,13 +114,38 @@ pipeline {
                             if (tg) urls.add(tg.trim())
                             mode = "SMART"
                         }
-                        else if (line.contains("techpowerup.com")) {
-                            echo ">>> Parsing TechPowerUp..."
-                            // Обязательно нужен User-Agent, иначе вернут 403
-                            def tpuID = sh(script: "curl -s -A 'Mozilla/5.0' '${line}' | grep -oP 'href=\"/download/start/\\?id=\\d+' | head -n 1 | cut -d'\"' -f2", returnStdout: true)
-                            if (tpuID) {
-                                urls.add("https://www.techpowerup.com${tpuID.trim()}")
-                                mode = "HASH" // У TPU имя файла статичное при скачивании
+                        else if (line.contains("hwinfo.com")) {
+                            echo ">>> Parsing HWInfo (RSS)..."
+                            // Берем версию из RSS
+                            def ver = sh(script: "curl -s 'https://sourceforge.net/projects/hwinfo/rss' | grep -o 'hwi64_[0-9]\\+' | head -n 1 | cut -d'_' -f2", returnStdout: true)
+                            if (ver) {
+                                urls.add("https://www.hwinfo.com/files/hwi64_${ver.trim()}.exe")
+                                mode = "SMART"
+                            }
+                        }
+                        else if (line.contains("qbittorrent.org")) {
+                            echo ">>> Parsing QBittorrent (RSS)..."
+                            def qbit = sh(script: "curl -s 'https://sourceforge.net/projects/qbittorrent/rss?path=/qbittorrent-win32' | grep -o 'https://.*_x64_setup.exe/download' | head -n 1", returnStdout: true)
+                            if (qbit) {
+                                urls.add(qbit.trim())
+                                mode = "SMART"
+                            }
+                        }
+                        else if (line.contains("nvcleanstall")) {
+                            echo ">>> Parsing NVCleanstall..."
+                            // 1. Ищем строку вида "NVCleanstall v1.19.0" в заголовке
+                            def ver = sh(script: "curl -s -A 'Mozilla/5.0' '${line}' | grep -oP 'NVCleanstall v\\K[0-9.]+' | head -n 1", returnStdout: true)
+                            
+                            if (ver) {
+                                def cleanVer = ver.trim()
+                                def targetName = "NVCleanstall_${cleanVer}.exe"
+                                // 2. Формируем "виртуальный" URL с именем файла, чтобы передать в загрузчик
+                                // Нам все равно нужно выцеплять ID для скачивания, но проверять будем по ИМЕНИ
+                                def tpuID = sh(script: "curl -s -A 'Mozilla/5.0' '${line}' | grep -oP 'href=\"/download/start/\\?id=\\d+' | head -n 1 | cut -d'\"' -f2", returnStdout: true)
+                                if (tpuID) {
+                                    urls.add("https://www.techpowerup.com${tpuID.trim()}?name=${targetName}")
+                                    mode = "SMART"
+                                }
                             }
                         }
                         else if (line.contains("mozilla.org")) {
@@ -123,7 +156,8 @@ pipeline {
                         }
                         else if (line.contains("openvpn.net")) {
                             echo ">>> Parsing OpenVPN..."
-                            def vpn = sh(script: "curl -s 'https://openvpn.net/client/' | grep -oP 'https://swupdate.openvpn.net/downloads/connect/openvpn-connect-[^\"]*-x64\\.msi' | head -n 1", returnStdout: true)
+                            // Ищем ссылку, игнорируем регистр, ищем расширение msi
+                            def vpn = sh(script: "curl -s -A 'Mozilla/5.0' 'https://openvpn.net/client/' | grep -oP 'https://swupdate.openvpn.net/downloads/connect/openvpn-connect-[0-9.]+_signed-x64\\.msi' | head -n 1", returnStdout: true)
                             if (vpn) urls.add(vpn.trim())
                             mode = "SMART"
                         }
@@ -131,15 +165,12 @@ pipeline {
                              echo ">>> Parsing Fraps..."
                              def frapsVer = sh(script: "curl -s http://www.fraps.com/download.php | grep -oP 'Fraps \\K[0-9.]+' | head -n 1", returnStdout: true)
                              if (frapsVer) {
-                                 // Качаем и сразу даем правильное имя с версией
-                                 def fVer = frapsVer.trim()
-                                 // Добавляем фейковый URL с параметром, чтобы передать имя файла в цикл загрузки
-                                 urls.add("https://www.fraps.com/free/setup.exe?name=FRAPS-${fVer}-setup.exe")
+                                 urls.add("https://www.fraps.com/free/setup.exe?name=FRAPS-${frapsVer.trim()}-setup.exe")
                                  mode = "SMART"
                              }
                         }
                         else {
-                            // Прямые ссылки (Steam, Revo и т.д.)
+                            // Прямые ссылки (Steam, Revo) - тут хеш неизбежен, версии нет в URL
                             urls.add(line.trim())
                             mode = "HASH"
                         }
@@ -148,60 +179,55 @@ pipeline {
                         urls.each { dUrl ->
                             if (!dUrl) return
                             
-                            // Определяем имя файла
                             def fname = ""
                             def cleanUrl = ""
                             
+                            // Обработка параметра ?name= (для Fraps и NVCleanstall)
                             if (dUrl.contains("?name=")) {
-                                // Если мы передали кастомное имя (как для Fraps)
                                 def parts = dUrl.split("\\?name=")
                                 cleanUrl = parts[0]
                                 fname = parts[1]
                             } else {
-                                // Обычный режим
                                 cleanUrl = dUrl
                                 fname = dUrl.split('/').last().split('\\?')[0]
                             }
                             
                             if (mode == "SMART") {
-                                if (fileExists("tmp/downloads/${fname}")) {
+                                if (fileExists("${env.DL_DIR}/${fname}")) {
                                     echo "   [SKIP] ${fname} already exists."
                                 } else {
                                     echo "   [DOWN] Downloading ${fname}..."
-                                    sh "curl -L -s -o 'tmp/downloads/${fname}' '${cleanUrl}'"
+                                    // Добавляем Referer для TechPowerUp, остальным он не мешает
+                                    sh "curl -L -s -A 'Mozilla/5.0' -e 'https://www.techpowerup.com/' -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
                                     
-                                    // Запись в лог
-                                    def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
-                                    sh "sed -i '\\#|${fname}|#d' repos/web_log.log"
-                                    sh "echo 'WEB-SMART|${fname}|${dateNow}' >> repos/web_log.log"
+                                    // Проверка что файл не пустой (TPU любит отдавать 0 байт если что-то не так)
+                                    def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}'", returnStdout: true).trim()
+                                    if (fSize == "0") {
+                                        echo "   [ERROR] Download failed (0 bytes) for ${fname}"
+                                        sh "rm '${env.DL_DIR}/${fname}'"
+                                    } else {
+                                        def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
+                                        sh "sed -i '\\#|${fname}|#d' repos/web_log.log"
+                                        sh "echo 'WEB-SMART|${fname}|${dateNow}' >> repos/web_log.log"
+                                    }
                                 }
                             } else {
-                                // HASH MODE (Steam, TechPowerUp)
+                                // HASH MODE (Только для Steam/Revo где нет выбора)
                                 echo "   [HASH CHECK] ${fname}..."
-                                // Используем Referer для TPU, иначе не скачает
-                                sh "curl -L -s -A 'Mozilla/5.0' -e 'https://www.techpowerup.com/' -o 'tmp/downloads/${fname}.new' '${cleanUrl}'"
+                                sh "curl -L -s -A 'Mozilla/5.0' -o '${env.DL_DIR}/${fname}.new' '${cleanUrl}'"
                                 
-                                // Проверка, скачался ли файл
-                                def fileSize = sh(script: "wc -c < 'tmp/downloads/${fname}.new'", returnStdout: true).trim()
-                                if (fileSize == "0") {
-                                    echo "   [ERROR] Download failed (empty file) for ${fname}"
-                                    sh "rm 'tmp/downloads/${fname}.new'"
-                                    return
-                                }
-
-                                def newHash = sh(script: "sha256sum 'tmp/downloads/${fname}.new' | awk '{print \$1}'", returnStdout: true).trim()
+                                def newHash = sh(script: "sha256sum '${env.DL_DIR}/${fname}.new' | awk '{print \$1}'", returnStdout: true).trim()
                                 def oldHash = sh(script: "grep '|${fname}|' repos/web_log.log | tail -n 1 | cut -d '|' -f 3 || echo 'none'", returnStdout: true).trim()
                                 
                                 if (newHash != oldHash) {
                                     echo "   [UPDATE] Hash mismatch! Updating ${fname}"
-                                    sh "mv 'tmp/downloads/${fname}.new' 'tmp/downloads/${fname}'"
+                                    sh "mv '${env.DL_DIR}/${fname}.new' '${env.DL_DIR}/${fname}'"
                                     
                                     def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
                                     sh "sed -i '\\#|${fname}|#d' repos/web_log.log"
                                     sh "echo 'WEB-HASH|${fname}|${newHash}|${dateNow}' >> repos/web_log.log"
                                 } else {
-                                    echo "   [SKIP] Hash matches for ${fname}"
-                                    sh "rm 'tmp/downloads/${fname}.new'"
+                                    sh "rm '${env.DL_DIR}/${fname}.new'"
                                 }
                             }
                         }
@@ -209,7 +235,6 @@ pipeline {
                 }
             }
         }
-
 
 
 
