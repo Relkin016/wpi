@@ -9,7 +9,6 @@ pipeline {
     stages {
         stage('Setup') {
             steps {
-                // Создаем папки и пустой лог, если его нет
                 sh "mkdir -p ${DL_DIR}"
                 sh "touch ${LOG_FILE}"
             }
@@ -95,8 +94,6 @@ pipeline {
                         def urls = [] 
                         def mode = "HASH"
 
-                        // --- ПАРСЕРЫ ---
-
                         if (line.contains("videolan.org")) {
                             echo ">>> Parsing VLC..."
                             // ИСПРАВЛЕНО: Регулярка теперь берет строго цифры и точки, без лишнего мусора
@@ -116,7 +113,6 @@ pipeline {
                         }
                         else if (line.contains("hwinfo.com")) {
                             echo ">>> Parsing HWInfo (RSS)..."
-                            // Берем версию из RSS
                             def ver = sh(script: "curl -s 'https://sourceforge.net/projects/hwinfo/rss' | grep -o 'hwi64_[0-9]\\+' | head -n 1 | cut -d'_' -f2", returnStdout: true)
                             if (ver) {
                                 urls.add("https://www.hwinfo.com/files/hwi64_${ver.trim()}.exe")
@@ -131,22 +127,64 @@ pipeline {
                                 mode = "SMART"
                             }
                         }
-                        else if (line.contains("nvcleanstall")) {
-                            echo ">>> Parsing NVCleanstall..."
-                            // 1. Ищем строку вида "NVCleanstall v1.19.0" в заголовке
-                            def ver = sh(script: "curl -s -A 'Mozilla/5.0' '${line}' | grep -oP 'NVCleanstall v\\K[0-9.]+' | head -n 1", returnStdout: true)
+
+			// --- FRAPS (Парсинг версии, скачивание с beepa.com) ---
+                        else if (line.contains("fraps.com")) {
+                             echo ">>> Parsing Fraps..."
+                             // 1. Парсим версию со страницы (например, 3.5.99)
+                             def frapsVer = sh(script: "curl -s https://fraps.com/download.php | grep -oP 'Fraps \\K[0-9.]+' | head -n 1", returnStdout: true).trim()
+                             
+                             if (frapsVer) {
+                                 // 2. Формируем ссылку на beepa.com с параметром имени
+                                 def targetName = "FRAPS-${frapsVer}-setup.exe"
+                                 urls.add("https://www.beepa.com/free/setup.exe?name=${targetName}")
+                                 mode = "SMART"
+                             }
+                        }
+			
+			//--!New SITES!---
+
+                        else if (line.contains("techpowerup.com")) {
+                            echo ">>> Parsing TechPowerUp..."
+                            def ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
                             
-                            if (ver) {
-                                def cleanVer = ver.trim()
-                                def targetName = "NVCleanstall_${cleanVer}.exe"
-                                // 2. Формируем "виртуальный" URL с именем файла, чтобы передать в загрузчик
-                                // Нам все равно нужно выцеплять ID для скачивания, но проверять будем по ИМЕНИ
-                                def tpuID = sh(script: "curl -s -A 'Mozilla/5.0' '${line}' | grep -oP 'href=\"/download/start/\\?id=\\d+' | head -n 1 | cut -d'\"' -f2", returnStdout: true)
-                                if (tpuID) {
-                                    urls.add("https://www.techpowerup.com${tpuID.trim()}?name=${targetName}")
-                                    mode = "SMART"
+                            def tpuID = sh(script: "curl -s -A '${ua}' '${line}' | grep -oP 'href=\"/download/start/\\?id=\\K\\d+' | head -n 1", returnStdout: true).trim()
+                            
+                            if (tpuID) {
+                                def ver = ""
+                                def finalName = ""
+                                
+                                if (line.contains("nvcleanstall")) {
+                                    ver = sh(script: "curl -s -A '${ua}' '${line}' | grep -oP 'NVCleanstall v\\K[0-9.]+' | head -n 1", returnStdout: true).trim()
+                                    if (ver) {
+                                        finalName = "NVCleanstall_${ver}.exe"
+                                    }
+                                } 
+                                else if (line.contains("visual-c")) {
+                                    def rawDate = sh(script: "curl -s -A '${ua}' '${line}' | grep -oP '[A-Z][a-z]+ [0-9]{1,2}(st|nd|rd|th), [0-9]{4}' | head -n 1", returnStdout: true).trim()
+                                    if (rawDate) {
+                                        // Удаляем суффиксы (th, st) и конвертируем в ISO дату (2025-12-04)
+                                        ver = sh(script: "echo '${rawDate}' | sed -E 's/(st|nd|rd|th),/,/g' | xargs -I {} date -d '{}' +%Y-%m-%d", returnStdout: true).trim()
+                                        finalName = "Visual-C-Runtimes-AIO_${ver}.zip"
+                                    }
+                                }
+
+                                if (finalName) {
+                                    echo "   [TPU] ID: ${tpuID} | Version/Date: ${ver}"
+                                    
+                                    // 2. Получаем ссылку на зеркало (имитация клика)
+                                    // Обязательно передаем Referer (-e), иначе вернут 403
+                                    def startUrl = "https://www.techpowerup.com/download/start/?id=${tpuID}"
+                                    def mirrorUrl = sh(script: "curl -s -A '${ua}' -e '${line}' '${startUrl}' | grep -oP 'action=\"\\K[^\"]+' | head -n 1", returnStdout: true).trim()
+                                    
+                                    if (mirrorUrl) {
+                                        if (mirrorUrl.startsWith("//")) mirrorUrl = "https:" + mirrorUrl
+                                        urls.add("${mirrorUrl}?name=${finalName}")
+                                        mode = "SMART"
+                                    }
                                 }
                             }
+                        }
                         }
                         else if (line.contains("mozilla.org")) {
                             echo ">>> Parsing Firefox..."
@@ -175,14 +213,14 @@ pipeline {
                             mode = "HASH"
                         }
 
-                        // --- ЗАГРУЗКА ---
+			// --- ЗАГРУЗКА ---
                         urls.each { dUrl ->
                             if (!dUrl) return
                             
                             def fname = ""
                             def cleanUrl = ""
                             
-                            // Обработка параметра ?name= (для Fraps и NVCleanstall)
+                            // Обработка параметра ?name=
                             if (dUrl.contains("?name=")) {
                                 def parts = dUrl.split("\\?name=")
                                 cleanUrl = parts[0]
@@ -192,27 +230,37 @@ pipeline {
                                 fname = dUrl.split('/').last().split('\\?')[0]
                             }
                             
+                            // Подготовка заголовков для curl
+                            def extraHeaders = "-A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'"
+                            
+                            // ДЛЯ TECHPOWERUP ОБЯЗАТЕЛЕН REFERER ПРИ СКАЧИВАНИИ
+                            if (cleanUrl.contains("techpowerup.com")) {
+                                extraHeaders += " -e 'https://www.techpowerup.com/'"
+                            }
+
                             if (mode == "SMART") {
-                                if (fileExists("${env.DL_DIR}/${fname}")) {
+                                if (fileExists("tmp/downloads/${fname}")) {
                                     echo "   [SKIP] ${fname} already exists."
                                 } else {
                                     echo "   [DOWN] Downloading ${fname}..."
-                                    // Добавляем Referer для TechPowerUp, остальным он не мешает
-                                    sh "curl -L -s -A 'Mozilla/5.0' -e 'https://www.techpowerup.com/' -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
+                                    // Вставляем extraHeaders
+                                    sh "curl -L -s ${extraHeaders} -o 'tmp/downloads/${fname}' '${cleanUrl}'"
                                     
-                                    // Проверка что файл не пустой (TPU любит отдавать 0 байт если что-то не так)
-                                    def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}'", returnStdout: true).trim()
+                                    // Проверка на пустой файл (TPU любит отдавать 0 байт при ошибке)
+                                    def fSize = sh(script: "wc -c < 'tmp/downloads/${fname}'", returnStdout: true).trim()
                                     if (fSize == "0") {
-                                        echo "   [ERROR] Download failed (0 bytes) for ${fname}"
-                                        sh "rm '${env.DL_DIR}/${fname}'"
+                                        echo "   [FAIL] Download failed (0 bytes). Check headers/protection."
+                                        sh "rm 'tmp/downloads/${fname}'"
                                     } else {
                                         def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
                                         sh "sed -i '\\#|${fname}|#d' repos/web_log.log"
                                         sh "echo 'WEB-SMART|${fname}|${dateNow}' >> repos/web_log.log"
                                     }
                                 }
+                            } 
+                            // ... (Hash блок ниже оставляешь как есть, только добавь туда тоже extraHeaders в curl)
+                        
                             } else {
-                                // HASH MODE (Только для Steam/Revo где нет выбора)
                                 echo "   [HASH CHECK] ${fname}..."
                                 sh "curl -L -s -A 'Mozilla/5.0' -o '${env.DL_DIR}/${fname}.new' '${cleanUrl}'"
                                 
