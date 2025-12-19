@@ -92,8 +92,7 @@ pipeline {
                 }
             }
         }
-
-        stage('Checking Web') {
+stage('Checking Web') {
             steps {
                 echo "Starting Web checks..."
                 script {
@@ -111,15 +110,21 @@ pipeline {
                         //        БЛОК ПАРСЕРОВ
                         // ===========================
 
-                        // --- 1. VLC ---
+                        // --- 1. VLC (x64 + x86) ---
                         if (line.contains("videolan.org")) {
                             echo ">>> Parsing VLC..."
+                            // Win64
                             def v64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win64\\.exe' | head -n 1", returnStdout: true).trim()
                             if (v64) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win64/${v64}")
+                            
+                            // Win32 (x86) - ВЕРНУЛ НА МЕСТО
+                            def v32 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win32/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win32\\.exe' | head -n 1", returnStdout: true).trim()
+                            if (v32) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win32/${v32}")
+                            
                             mode = "SMART"
                         } 
 
-                        // --- 2. TELEGRAM (Fix 32bit) ---
+                        // --- 2. TELEGRAM (x64 + x86) ---
                         else if (line.contains("telegram.org")) {
                             echo ">>> Parsing Telegram..."
                             // Win64
@@ -164,18 +169,11 @@ pipeline {
                              }
                         }
 
-                        // --- 6. OPENVPN ---
-                        else if (line.contains("openvpn.net")) {
-                            echo ">>> Parsing OpenVPN..."
-                            def vpnUrl = sh(script: "curl -s -k -L -A '${env.UA}' 'https://openvpn.net/client-connect-vpn-for-windows/' | grep -oP 'https://swupdate\\.openvpn\\.net/[^\"]+\\.msi' | head -n 1", returnStdout: true).trim()
-                            if (!vpnUrl) {
-                                vpnUrl = sh(script: "curl -s -k -L -A '${env.UA}' 'https://openvpn.net/client/' | grep -oP 'https://swupdate\\.openvpn\\.net/[^\"]+\\.msi' | head -n 1", returnStdout: true).trim()
-                            }
-                            if (vpnUrl) {
-                                urls.add(vpnUrl)
-                                mode = "SMART"
-                            }
+                        // --- 6. OPENVPN (ОТЛОЖЕНО) ---
+                        /* else if (line.contains("openvpn.net")) {
+                           // Логика отключена по запросу
                         }
+                        */
 
                         // --- 7. SOURCEFORGE (qBittorrent + HWInfo) ---
                         else if (line.contains("qbittorrent.org") || line.contains("hwinfo.com")) {
@@ -194,6 +192,7 @@ pipeline {
 
                                 if (directUrl) {
                                     def fName = webUrl.replace("/download", "").split('/').last()
+                                    // HWInfo fix (remove dots from name body, keep extension)
                                     if (line.contains("hwinfo")) {
                                          fName = fName.replace(".exe", "").replace(".", "") + ".exe"
                                     }
@@ -204,7 +203,7 @@ pipeline {
                             }
                         }
 
-                        // --- 9. HASH CHECK (Остальные) ---
+                        // --- 8. HASH CHECK (Остальные + OpenVPN попадет сюда) ---
                         else {
                             urls.add(line.trim())
                             mode = "HASH"
@@ -279,5 +278,6 @@ pipeline {
                 }
             }
         }
+
     }
 }
