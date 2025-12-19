@@ -5,8 +5,8 @@ https://telegram.org/
 https://www.hwinfo.com/
 https://www.qbittorrent.org/
 http://www.fraps.com/download.php
-https://www.techpowerup.com/download/techpowerup-nvcleanstall/
-https://www.techpowerup.com/download/visual-c-redistributable-runtime-package-all-in-one/
+# https://www.techpowerup.com/download/techpowerup-nvcleanstall/
+# https://www.techpowerup.com/download/visual-c-redistributable-runtime-package-all-in-one/
 https://www.mozilla.org/ru/firefox/all/
 https://openvpn.net/client/
 

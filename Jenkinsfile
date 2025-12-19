@@ -2,22 +2,23 @@ pipeline {
     agent any
 
     environment {
-        // Пути
         DL_DIR = "tmp/downloads"
         LOG_FILE = "repos/web_log.log"
         GITHUB_LIST = "repos/github.txt"
         WEB_LIST = "repos/web.txt"
+        // Глобальный User-Agent (обязателен для SourceForge, HWInfo, Epic)
+        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
     stages {
-        stage('Cleanup Old Data') {
+        stage('Cleanup') {
             steps {
                 echo "Cleaning up workspace..."
-                // Удаляем временные файлы загрузок (.new), но оставляем скачанное
                 sh "mkdir -p ${DL_DIR}"
+                // Чистим временные файлы, оставляем готовые инсталляторы
                 sh "rm -f ${DL_DIR}/*.new"
-                // Если лога нет, создаем
-                sh "touch ${LOG_FILE}"
+                sh "rm -f ${DL_DIR}/*.html"
+                if (!fileExists(LOG_FILE)) sh "touch ${LOG_FILE}"
             }
         }
 
@@ -63,7 +64,7 @@ pipeline {
                                     echo "   + Downloading: ${fileName}"
                                     sh "wget -qP ${env.DL_DIR} ${dUrl}"
                                     
-                                    // РАСПАКОВКА ZIP (WuaCpuFix и др)
+                                    // АВТО-РАСПАКОВКА ZIP (WuaCpuFix, VisualCpp и др)
                                     if (fileName.endsWith(".zip")) {
                                         def folderName = fileName.replace('.zip', '')
                                         echo "   [UNZIP] Extracting into ${folderName}..."
@@ -109,102 +110,106 @@ pipeline {
                         // --- 1. VLC ---
                         if (line.contains("videolan.org")) {
                             echo ">>> Parsing VLC..."
-                            def v64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win64\\.exe' | head -n 1", returnStdout: true)
-                            def v32 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win32/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win32\\.exe' | head -n 1", returnStdout: true)
-                            
-                            if (v64) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win64/${v64.trim()}")
-                            if (v32) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win32/${v32.trim()}")
+                            def v64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win64\\.exe' | head -n 1", returnStdout: true).trim()
+                            if (v64) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win64/${v64}")
                             mode = "SMART"
                         } 
 
-                        // --- 2. Telegram ---
+                        // --- 2. TELEGRAM ---
                         else if (line.contains("telegram.org")) {
                             echo ">>> Parsing Telegram..."
-                            def tg = sh(script: "curl -s -I 'https://telegram.org/dl/desktop/win64' | grep -i 'location:' | awk '{print \$2}' | tr -d '\r'", returnStdout: true)
-                            if (tg) urls.add(tg.trim())
+                            def tg = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://telegram.org/dl/desktop/win64'", returnStdout: true).trim()
+                            if (tg) urls.add(tg)
                             mode = "SMART"
                         }
-                        // --- 3. FRAPS ---
+
+                        // --- 3. EPIC GAMES ---
+                        else if (line.contains("epicgames.com")) {
+                            echo ">>> Parsing Epic Games..."
+                            def rawUrl = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
+                            if (rawUrl) {
+                                // Отрезаем мусор после '?'
+                                urls.add(rawUrl.split('\\?')[0])
+                                mode = "SMART"
+                            }
+                        }
+
+                        // --- 4. FIREFOX ---
+                        else if (line.contains("mozilla.org")) {
+                            echo ">>> Parsing Firefox..."
+                            def rawUrl = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=ru'", returnStdout: true).trim()
+                            if (rawUrl) {
+                                // Меняем %20 на точки в имени файла (Firefox%20Setup -> Firefox.Setup)
+                                def oldName = rawUrl.split('/').last()
+                                def newName = sh(script: "echo '${oldName}' | sed 's/%20/./g'", returnStdout: true).trim()
+                                urls.add("${rawUrl}?name=${newName}")
+                                mode = "SMART"
+                            }
+                        }
+
+                        // --- 5. FRAPS ---
                         else if (line.contains("fraps.com")) {
                              echo ">>> Parsing Fraps..."
-                             def frapsVer = sh(script: "curl -s https://fraps.com/download.php | grep -oP 'Fraps \\K[0-9.]+' | head -n 1", returnStdout: true)
+                             def frapsVer = sh(script: "curl -s https://fraps.com/download.php | grep -oP 'Fraps \\K[0-9.]+' | head -n 1", returnStdout: true).trim()
                              if (frapsVer) {
-                                 def fVer = frapsVer.trim()
-                                 urls.add("https://beepa.com/free/setup.exe?name=FRAPS-${fVer}-setup.exe")
+                                 urls.add("https://beepa.com/free/setup.exe?name=FRAPS-${frapsVer}-setup.exe")
                                  mode = "SMART"
                              }
                         }
-                        // --- 4. TechPowerUp ---
-                        else if (line.contains("techpowerup.com")) {
-                            echo ">>> Parsing TechPowerUp..."
-                            def ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-                            
-                            def tpuID = sh(script: "curl -s -A '${ua}' '${line}' | grep -oP 'href=\"/download/start/\\?id=\\K\\d+' | head -n 1", returnStdout: true).trim()
-                            
-                            if (tpuID) {
-                                def ver = ""
-                                def finalName = ""
-                                
-                                // NVCleanstall
-                                if (line.contains("nvcleanstall")) {
-                                    ver = sh(script: "curl -s -A '${ua}' '${line}' | grep -oP 'NVCleanstall v\\K[0-9.]+' | head -n 1", returnStdout: true).trim()
-                                    if (ver) finalName = "NVCleanstall_${ver}.exe"
-                                } 
-                                // Visual C++
-                                else if (line.contains("visual-c")) {
-                                    def rawDate = sh(script: "curl -s -A '${ua}' '${line}' | grep -oP '[A-Z][a-z]+ [0-9]{1,2}(st|nd|rd|th), [0-9]{4}' | head -n 1", returnStdout: true).trim()
-                                    if (rawDate) {
-                                        ver = sh(script: "echo '${rawDate}' | sed -E 's/(st|nd|rd|th),/,/g' | xargs -I {} date -d '{}' +%Y-%m-%d", returnStdout: true).trim()
-                                        finalName = "Visual-C-Runtimes-AIO_${ver}.zip"
-                                    }
-                                }
 
-                                if (finalName) {
-                                    echo "   [TPU] Detected: ${finalName}"
-                                    def startUrl = "https://www.techpowerup.com/download/start/?id=${tpuID}"
-                                    def mirrorUrl = sh(script: "curl -s -A '${ua}' -e '${line}' '${startUrl}' | grep -oP 'action=\"\\K[^\"]+' | head -n 1", returnStdout: true).trim()
-                                    
-                                    if (mirrorUrl) {
-                                        if (mirrorUrl.startsWith("//")) mirrorUrl = "https:" + mirrorUrl
-                                        urls.add("${mirrorUrl}?name=${finalName}")
-                                        mode = "SMART"
-                                    }
-                                }
-                            }
-                        }
-                        // --- 5. Firefox ---
-                        else if (line.contains("mozilla.org")) {
-                            echo ">>> Parsing Firefox..."
-                            def ff = sh(script: "curl -s -I 'https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=ru' | grep -i 'location:' | awk '{print \$2}' | tr -d '\r'", returnStdout: true)
-                            if (ff) urls.add(ff.trim())
-                            mode = "SMART"
-                        }
-                        // --- 6. OpenVPN ---
+                        // --- 6. OPENVPN ---
                         else if (line.contains("openvpn.net")) {
                             echo ">>> Parsing OpenVPN..."
-                            def vpn = sh(script: "curl -s -A 'Mozilla/5.0' 'https://openvpn.net/client/' | grep -oP 'https://swupdate.openvpn.net/downloads/connect/openvpn-connect-[0-9.]+_signed-x64\\.msi' | head -n 1", returnStdout: true)
-                            if (vpn) urls.add(vpn.trim())
-                            mode = "SMART"
-                        }
-                        // --- 7. HWInfo (RSS) ---
-                        else if (line.contains("hwinfo.com")) {
-                            echo ">>> Parsing HWInfo..."
-                            def ver = sh(script: "curl -s 'https://sourceforge.net/projects/hwinfo/rss' | grep -o 'hwi64_[0-9]\\+' | head -n 1 | cut -d'_' -f2", returnStdout: true)
-                            if (ver) {
-                                urls.add("https://www.hwinfo.com/files/hwi64_${ver.trim()}.exe")
+                            // Ленивый поиск: любой MSI, в ссылке есть 'openvpn' и 'x64'
+                            def vpnUrl = sh(script: "curl -s -L 'https://openvpn.net/client/' | grep -oP 'href=\"\\K[^\"]+\\.msi' | grep 'openvpn' | grep 'x64' | head -n 1", returnStdout: true).trim()
+                            if (vpnUrl) {
+                                if (vpnUrl.startsWith("/")) vpnUrl = "https://openvpn.net" + vpnUrl
+                                urls.add(vpnUrl)
                                 mode = "SMART"
                             }
                         }
-                        // --- 8. QBittorrent (RSS) ---
-                        else if (line.contains("qbittorrent.org")) {
-                            echo ">>> Parsing QBittorrent..."
-                            def qbit = sh(script: "curl -s 'https://sourceforge.net/projects/qbittorrent/rss?path=/qbittorrent-win32' | grep -o 'https://.*_x64_setup.exe/download' | head -n 1", returnStdout: true)
-                            if (qbit) {
-                                urls.add(qbit.trim())
-                                mode = "SMART"
+
+                        // --- 7. SOURCEFORGE (qBittorrent + HWInfo) ---
+                        // Используем метод: Скачать HTML -> Найти прямую ссылку
+                        else if (line.contains("qbittorrent.org") || line.contains("hwinfo.com")) {
+                            echo ">>> Parsing SourceForge (qBit/HWInfo)..."
+                            
+                            def rssLink = ""
+                            if (line.contains("qbittorrent")) rssLink = "https://sourceforge.net/projects/qbittorrent/rss?path=/qbittorrent-win32"
+                            if (line.contains("hwinfo")) rssLink = "https://sourceforge.net/projects/hwinfo/rss"
+
+                            // 1. Берем ссылку с таймером из RSS
+                            def webUrl = sh(script: "curl -s '${rssLink}' | grep -o 'https://[^\"<]*\\(x64_setup\\|hwi64_[0-9]\\+\\)\\.exe/download' | head -n 1", returnStdout: true).trim()
+                            
+                            if (webUrl) {
+                                // 2. Качаем HTML страницы с таймером во временный файл
+                                sh "curl -L -s -A '${env.UA}' -o 'tmp/sf_temp.html' '${webUrl}'"
+                                
+                                // 3. Выдираем прямую ссылку downloads.sourceforge.net
+                                def directUrl = sh(script: "grep -oP 'https://downloads\\.sourceforge\\.net/[^\"]+' tmp/sf_temp.html | head -n 1", returnStdout: true).trim()
+                                
+                                // Чистим за собой
+                                sh "rm -f tmp/sf_temp.html"
+
+                                if (directUrl) {
+                                    def fName = webUrl.replace("/download", "").split('/').last()
+                                    // Если это HWInfo, убираем точки из версии на всякий случай
+                                    if (line.contains("hwinfo")) fName = fName.replace(".", "") 
+                                    
+                                    urls.add("${directUrl}?name=${fName}")
+                                    mode = "SMART"
+                                }
                             }
                         }
-                        // --- Остальные (Hash Check) ---
+
+                        // --- 8. TECHPOWERUP (ОТКЛЮЧЕНО ПО ЗАПРОСУ) ---
+                        /* else if (line.contains("techpowerup.com")) {
+                            echo ">>> Parsing TechPowerUp (DISABLED)..."
+                            // Логика закомментирована
+                        }
+                        */
+
+                        // --- 9. HASH CHECK (Остальные) ---
                         else {
                             urls.add(line.trim())
                             mode = "HASH"
@@ -225,11 +230,14 @@ pipeline {
                                 fname = parts[1]
                             } else {
                                 cleanUrl = dUrl
-                                fname = dUrl.split('/').last().split('\\?')[0]
+                                def rawName = cleanUrl.split('/').last().split('\\?')[0]
+                                fname = java.net.URLDecoder.decode(rawName, "UTF-8")
                             }
 
-                            // Заголовки (Критично для TPU)
-                            def headers = "-A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'"
+                            // Headers
+                            def headers = "-A '${env.UA}' -L"
+                            
+                            // Если вдруг попадутся ссылки TPU, добавляем Referer, чтобы хоть как-то работало
                             if (cleanUrl.contains("techpowerup.com")) {
                                 headers += " -e 'https://www.techpowerup.com/'"
                             }
@@ -239,11 +247,12 @@ pipeline {
                                     echo "   [SKIP] ${fname} already exists."
                                 } else {
                                     echo "   [DOWN] Downloading ${fname}..."
-                                    sh "curl -L -s ${headers} -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
+                                    sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
                                     
+                                    // Проверка размера (защита от HTML-ошибок)
                                     def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}'", returnStdout: true).trim()
-                                    if (fSize == "0") {
-                                        echo "   [FAIL] 0 bytes downloaded. Check URL/Protection."
+                                    if (fSize == "0" || fSize.toInteger() < 10000) {
+                                        echo "   [FAIL] File too small (${fSize} bytes). Deleting."
                                         sh "rm '${env.DL_DIR}/${fname}'"
                                     } else {
                                         def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
@@ -254,19 +263,24 @@ pipeline {
                             } else {
                                 // HASH CHECK MODE
                                 echo "   [HASH CHECK] ${fname}..."
-                                sh "curl -L -s ${headers} -o '${env.DL_DIR}/${fname}.new' '${cleanUrl}'"
+                                sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}.new' '${cleanUrl}'"
                                 
-                                def newHash = sh(script: "sha256sum '${env.DL_DIR}/${fname}.new' | awk '{print \$1}'", returnStdout: true).trim()
-                                def oldHash = sh(script: "grep '|${fname}|' ${env.LOG_FILE} | tail -n 1 | cut -d '|' -f 3 || echo 'none'", returnStdout: true).trim()
-                                
-                                if (newHash != oldHash) {
-                                    echo "   [UPDATE] Hash mismatch! Updating..."
-                                    sh "mv '${env.DL_DIR}/${fname}.new' '${env.DL_DIR}/${fname}'"
-                                    def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
-                                    sh "sed -i '\\#|${fname}|#d' ${env.LOG_FILE}"
-                                    sh "echo 'WEB-HASH|${fname}|${newHash}|${dateNow}' >> ${env.LOG_FILE}"
-                                } else {
+                                def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}.new'", returnStdout: true).trim()
+                                if (fSize == "0" || fSize.toInteger() < 10000) {
                                     sh "rm '${env.DL_DIR}/${fname}.new'"
+                                } else {
+                                    def newHash = sh(script: "sha256sum '${env.DL_DIR}/${fname}.new' | awk '{print \$1}'", returnStdout: true).trim()
+                                    def oldHash = sh(script: "grep '|${fname}|' ${env.LOG_FILE} | tail -n 1 | cut -d '|' -f 3 || echo 'none'", returnStdout: true).trim()
+                                    
+                                    if (newHash != oldHash) {
+                                        echo "   [UPDATE] Hash mismatch! Updating..."
+                                        sh "mv '${env.DL_DIR}/${fname}.new' '${env.DL_DIR}/${fname}'"
+                                        def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
+                                        sh "sed -i '\\#|${fname}|#d' ${env.LOG_FILE}"
+                                        sh "echo 'WEB-HASH|${fname}|${newHash}|${dateNow}' >> ${env.LOG_FILE}"
+                                    } else {
+                                        sh "rm '${env.DL_DIR}/${fname}.new'"
+                                    }
                                 }
                             }
                         }
