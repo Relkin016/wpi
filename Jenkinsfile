@@ -6,7 +6,7 @@ pipeline {
         LOG_FILE = "repos/web_log.log"
         GITHUB_LIST = "repos/github.txt"
         WEB_LIST = "repos/web.txt"
-        // ФИКС: Убрал скобки (), чтобы bash не сходил с ума. Это решает ошибку "Syntax error"
+        // UA без скобок
         UA = "Mozilla/5.0 Windows NT 10.0 Win64 x64"
     }
 
@@ -15,7 +15,6 @@ pipeline {
             steps {
                 script {
                     echo "Cleaning up workspace..."
-		    sh "rm -rf tmp/donwloads/*"
                     sh "mkdir -p ${env.DL_DIR}"
                     sh "rm -f ${env.DL_DIR}/*.new"
                     sh "rm -f ${env.DL_DIR}/*.html"
@@ -44,20 +43,19 @@ pipeline {
 
                         echo ">>> Checking: ${repo}"
 
-                        // Получаем JSON. Одинарные кавычки вокруг UA на всякий случай оставлены.
-                        def jsonResponse = sh(script: "curl -s -H 'User-Agent: ${env.UA}' https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
+                        // ФИКС: Используем экранированные двойные кавычки \"...\"
+                        // Это гарантирует, что Shell правильно увидит строку с пробелами
+                        def jsonResponse = sh(script: "curl -s -H \"User-Agent: ${env.UA}\" https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
 
-                        // 1. ПРОВЕРКА ЛИМИТОВ (КРАСНАЯ ОШИБКА)
                         if (jsonResponse.contains("API rate limit exceeded")) {
-                            error "GITHUB API LIMIT EXCEEDED! (Wait 1 hour or add Token). Server Response: \n${jsonResponse}"
+                            error "GITHUB API LIMIT EXCEEDED! Response: \n${jsonResponse}"
                         }
 
                         def latestVersion = sh(script: "echo '${jsonResponse}' | jq -r .tag_name", returnStdout: true).trim()
 
-                        // 2. ПРОВЕРКА НА ОШИБКИ ПОЛУЧЕНИЯ ВЕРСИИ
                         if (!latestVersion || latestVersion == "null") {
                             echo "JSON Response: ${jsonResponse}"
-                            error "Failed to get version for ${repo}. Check if repo exists and has releases."
+                            error "Failed to get version for ${repo}. Check regex or repo existence."
                         }
 
                         def currentVersion = sh(script: "grep '^${repo}|' ${env.LOG_FILE} | cut -d '|' -f 2 || echo '0'", returnStdout: true).trim()
@@ -70,7 +68,6 @@ pipeline {
                                 jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
                             """, returnStdout: true).trim()
 
-                            // 3. ПРОВЕРКА НА СОВПАДЕНИЕ ПАТТЕРНА (КРАСНАЯ ОШИБКА)
                             if (downloadUrls && downloadUrls != "null") {
                                 def urls = downloadUrls.split('\n')
                                 urls.each { dUrl ->
@@ -92,8 +89,7 @@ pipeline {
                                 sh "echo '${repo}|${latestVersion}|${dateNow}' >> ${env.LOG_FILE}"
                                 
                             } else {
-                                // Если версия новая, но файл по регулярке не найден — падаем
-                                error "CRITICAL: New version found for ${repo}, but NO files matched regex: '${regex}'. Check your pattern!"
+                                error "CRITICAL: Version changed for ${repo}, but NO files matched regex: '${regex}'"
                             }
                         } else {
                             echo "No updates for ${repo}"
@@ -139,7 +135,8 @@ pipeline {
                         // --- 3. EPIC GAMES ---
                         else if (line.contains("epicgames.com")) {
                             echo ">>> Parsing Epic Games..."
-                            def rawUrl = sh(script: "curl -s -A '${env.UA}' -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
+                            // ФИКС: Экранированные кавычки для UA
+                            def rawUrl = sh(script: "curl -s -A \"${env.UA}\" -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
                             if (rawUrl) {
                                 urls.add(rawUrl.split('\\?')[0])
                                 mode = "SMART"
@@ -175,7 +172,8 @@ pipeline {
                             def webUrl = sh(script: "curl -s '${rssLink}' | grep -o 'https://[^\"<]*\\(x64_setup\\|hwi64_[0-9]\\+\\)\\.exe/download' | head -n 1", returnStdout: true).trim()
                             
                             if (webUrl) {
-                                sh "curl -L -s -A '${env.UA}' -o 'tmp/sf_temp.html' '${webUrl}'"
+                                // ФИКС: Экранированные кавычки для UA
+                                sh "curl -L -s -A \"${env.UA}\" -o 'tmp/sf_temp.html' '${webUrl}'"
                                 def directUrl = sh(script: "grep -oP 'https://downloads\\.sourceforge\\.net/[^\"]+' tmp/sf_temp.html | head -n 1", returnStdout: true).trim()
                                 sh "rm -f tmp/sf_temp.html"
 
@@ -210,8 +208,8 @@ pipeline {
                                 fname = java.net.URLDecoder.decode(rawName, "UTF-8")
                             }
 
-                            // Headers
-                            def headers = "-A '${env.UA}' -L"
+                            // ФИКС: Формируем headers с экранированными кавычками
+                            def headers = "-A \"${env.UA}\" -L"
                             if (cleanUrl.contains("techpowerup.com")) headers += " -e 'https://www.techpowerup.com/'"
 
                             if (mode == "SMART") {
