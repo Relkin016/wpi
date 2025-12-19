@@ -26,8 +26,7 @@ pipeline {
                 }
             }
         }
-
-        stage('Checking GitHub') {
+	stage('Checking GitHub') {
             steps {
                 echo "Starting GitHub checks..."
                 script {
@@ -45,10 +44,17 @@ pipeline {
 
                         echo ">>> Checking: ${repo}"
 
-                        def latestVersion = sh(script: "curl -s https://api.github.com/repos/${repo}/releases/latest | jq -r .tag_name", returnStdout: true).trim()
+                        // 1. Сначала получаем сырой JSON ответ
+                        // ВАЖНО: Добавил User-Agent (-H), без него GitHub может отвергать запросы
+                        def jsonResponse = sh(script: "curl -s -H 'User-Agent: ${env.UA}' https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
 
+                        // 2. Пробуем вытащить тег
+                        def latestVersion = sh(script: "echo '${jsonResponse}' | jq -r .tag_name", returnStdout: true).trim()
+
+                        // 3. Если тег пустой или null — выводим ошибку, которую вернул GitHub
                         if (!latestVersion || latestVersion == "null") {
-                            echo "Error checking ${repo}. Skipping."
+                            echo "!!! ERROR checking ${repo}. Response from GitHub:"
+                            echo jsonResponse // <-- Тут мы увидим "API rate limit exceeded"
                             return 
                         }
 
@@ -57,8 +63,9 @@ pipeline {
                         if (latestVersion != currentVersion) {
                             echo "UPDATE FOUND for ${repo}: ${currentVersion} -> ${latestVersion}"
                             
+                            // Парсим URL для скачивания
                             def downloadUrls = sh(script: """
-                                curl -s https://api.github.com/repos/${repo}/releases/latest | \
+                                echo '${jsonResponse}' | \
                                 jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
                             """, returnStdout: true).trim()
 
@@ -93,7 +100,8 @@ pipeline {
                 }
             }
         }
-stage('Checking Web') {
+
+	stage('Checking Web') {
             steps {
                 echo "Starting Web checks..."
                 script {
