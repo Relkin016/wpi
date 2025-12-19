@@ -2,7 +2,7 @@
 # Игнорируем версии (.*), ловим только нужную архитектуру и расширение
 https://github.com/rustdesk/rustdesk;rustdesk-.*-(x86-sciter|x86_64)\.exe
 https://github.com/localsend/localsend;LocalSend-.*-windows-x86-64\.exe
-https://github.com/p-lider/WuaCpuFix;WuaCpuFix\.exe$
+https://github.com/p-lider/WuaCpuFix;WuaCpuFix_.*\.zip$
 https://github.com/sysprogs/WinCDEmu;^WinCDEmu-.*\.exe$
 https://github.com/ip7z/7zip;7z.*-x64\.exe
 https://github.com/ModuleArt/quick-picture-viewer;QuickPictureViewer-Setup\.exe

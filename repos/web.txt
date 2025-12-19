@@ -6,6 +6,11 @@ https://www.hwinfo.com/
 https://www.qbittorrent.org/
 https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi
 http://www.fraps.com/download.php
+https://www.techpowerup.com/download/techpowerup-nvcleanstall/
+https://www.techpowerup.com/download/visual-c-redistributable-runtime-package-all-in-one/
+https://www.mozilla.org/ru/firefox/all/
+https://openvpn.net/client/
+
 
 # --- СЕКЦИЯ ПРЯМЫХ ССЫЛОК (HASH CHECK) ---
 # Для этих ссылок скрипт будет каждый раз скачивать файл .new и сверять хеш-сумму

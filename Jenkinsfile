@@ -1,7 +1,6 @@
 pipeline {
     agent any
     environment {
-        // Задаем рабочие папки через переменные
         DL_DIR = "tmp/downloads"
         LOG_FILE = "repos/web_log.log"
         GITHUB_LIST = "repos/github.txt"
@@ -27,7 +26,6 @@ pipeline {
                         def parts = line.split(';')
                         def url = parts[0].trim()
                         def regex = parts[1].trim()
-                        // Получаем чистое имя репо
                         def repo = url.replace("https://github.com/", "").replace(/\/$/, "")
                         echo ">>> Checking: ${repo}"
                         def latestVersion = sh(script: "curl -s https://api.github.com/repos/${repo}/releases/latest | jq -r .tag_name", returnStdout: true).trim()
@@ -39,29 +37,30 @@ pipeline {
                         def currentVersion = sh(script: "grep '^${repo}|' ${env.LOG_FILE} | cut -d '|' -f 2 || echo '0'", returnStdout: true).trim()
                         if (latestVersion != currentVersion) {
                             echo "UPDATE FOUND for ${repo}: ${currentVersion} -> ${latestVersion}"
-                            // Получаем СПИСОК ссылок (убрали head -n 1)
                             def downloadUrls = sh(script: """
                                 curl -s https://api.github.com/repos/${repo}/releases/latest | \
                                 jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
                             """, returnStdout: true).trim()
 
                             if (downloadUrls && downloadUrls != "null") {
-                                // Разбиваем список по строкам
                                 def urls = downloadUrls.split('\n')
                                 
-                                urls.each { dUrl ->
+				urls.each { dUrl ->
                                     echo "   + Downloading: ${dUrl}"
-                                    // Качаем каждый файл
                                     sh "wget -qP ${env.DL_DIR} ${dUrl}"
-                                }
-                                
-                                // Обновляем лог только 1 раз после скачивания всех файлов
+                                    
+                                    if (dUrl.endsWith(".zip")) {
+                                        echo "   [UNZIP] Extracting ${dUrl.split('/').last()}..."
+                                        sh "unzip -o ${env.DL_DIR}/${dUrl.split('/').last()} -d ${env.DL_DIR} && rm ${env.DL_DIR}/${dUrl.split('/').last()}"
+                                    }
+                                }                                
 				sh "sed -i '\\#^${repo}|#d' ${env.LOG_FILE}"
 				def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
 				sh "echo '${repo}|${latestVersion}|${dateNow}' >> ${env.LOG_FILE}"                                
                             } else {
                                 echo "   ! Version changed, but NO files matched regex: ${regex}"
-                            }
+                            	exit 1
+				}
                         } else {
                             echo "No updates for ${repo}"
                         }
@@ -75,7 +74,6 @@ pipeline {
             steps {
                 echo "Starting Web checks..."
                 script {
-                    // Используем полный путь из env или прямой путь, если env багует
                     def webFile = "repos/web.txt"
                     if (!fileExists(webFile)) {
                         error "File ${webFile} not found!"
@@ -89,14 +87,49 @@ pipeline {
                         def urls = []
                         def mode = "HASH"
 
-                        if (line.contains("videolan.org")) {
+			    if (line.contains("videolan.org")) {
                             echo ">>> VLC..."
-                            def vlc64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'vlc-.*-win64\\.exe' | head -n 1", returnStdout: true).trim()
-                            def vlc32 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win32/ | grep -oP 'vlc-.*-win32\\.exe' | head -n 1", returnStdout: true).trim
-			    if (vlc64) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win64/${vlc64}")
-                            if (vlc32) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win32/${vlc32}")
-		            mode = "SMART"
+                            def v64 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'vlc-.*-win64\\.exe' | head -n 1", returnStdout: true)
+                            def v32 = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win32/ | grep -oP 'vlc-.*-win32\\.exe' | head -n 1", returnStdout: true)
+                            if (v64) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win64/${v64.trim()}")
+                            if (v32) urls.add("https://download.videolan.org/pub/videolan/vlc/last/win32/${v32.trim()}")
+                            mode = "SMART"
+                        }
                         } 
+
+			// --- 2. TechPowerUp (NVCleanstall, VCRedist AIO) ---
+                        else if (line.contains("techpowerup.com")) {
+                            echo ">>> Parsing TechPowerUp..."
+                            // Выцепляем прямую ссылку на скачивание (используем куки, чтобы обойти выбор сервера)
+                            // Для NVCleanstall ID обычно в URL. 
+                            // ВАЖНО: TPU часто требует специфический парсинг. Проще всего брать по паттерну:
+                            def tpuUrl = sh(script: "curl -s -A 'Mozilla/5.0' '${line}' | grep -oP 'href=\"/download/start/\\?id=\\d+' | head -n 1 | sed 's/href=\"//' | sed 's/\"//'", returnStdout: true).trim()
+                            if (tpuUrl) {
+                                // Это ссылка на страницу старта, curl -I покажет куда она редиректит на файл
+                                downloadUrl = "https://www.techpowerup.com${tpuUrl}"
+                                mode = "HASH" // У TPU файлы часто имеют статичные имена
+                                urls.add(downloadUrl)
+                            }
+                        }
+
+                        // --- 3. Mozilla Firefox (Offline Installer) ---
+                        else if (line.contains("mozilla.org")) {
+                            echo ">>> Parsing Firefox..."
+                            // Ссылка на последний стабильный x64 RU
+                            def ffUrl = "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=ru"
+                            def realUrl = sh(script: "curl -s -I '${ffUrl}' | grep -i 'location:' | awk '{print \$2}' | tr -d '\r'", returnStdout: true).trim()
+                            if (realUrl) urls.add(realUrl)
+                            mode = "SMART"
+                        }
+
+                        // --- 4. OpenVPN Connect ---
+                        else if (line.contains("openvpn.net")) {
+                            echo ">>> Parsing OpenVPN..."
+                            // Ищем ссылку на Windows MSI в тексте страницы
+                            def vpnUrl = sh(script: "curl -s 'https://openvpn.net/client/' | grep -oP 'https://swupdate.openvpn.net/downloads/connect/openvpn-connect-[^\"]*-x64\\.msi' | head -n 1", returnStdout: true).trim()
+                            if (vpnUrl) urls.add(vpnUrl)
+                            mode = "SMART"
+                        }
                         else if (line.contains("telegram.org")) {
                             echo ">>> Telegram..."
                             def tg64 = sh(script: "curl -s -I 'https://telegram.org/dl/desktop/win64' | grep -i 'location:' | awk '{print \$2}' | tr -d '\r'", returnStdout: true).trim()
