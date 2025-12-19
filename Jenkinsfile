@@ -119,19 +119,22 @@ pipeline {
                             mode = "SMART"
                         } 
 
-                        // --- 2. TELEGRAM ---
+                        // --- 2. TELEGRAM (Fix 32bit) ---
                         else if (line.contains("telegram.org")) {
                             echo ">>> Parsing Telegram..."
-                            def tg = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://telegram.org/dl/desktop/win64'", returnStdout: true).trim()
-                            if (tg) urls.add(tg)
+                            // Win64
+                            def tg64 = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://telegram.org/dl/desktop/win64'", returnStdout: true).trim()
+                            if (tg64) urls.add(tg64)
+                            // Win32
+                            def tg32 = sh(script: "curl -s -o /dev/null -w '%{redirect_url}' 'https://telegram.org/dl/desktop/win'", returnStdout: true).trim()
+                            if (tg32) urls.add(tg32)
+                            
                             mode = "SMART"
                         }
 
                         // --- 3. EPIC GAMES ---
-                        // Ищет ссылку на инсталлер (api)
                         else if (line.contains("epicgames.com")) {
                             echo ">>> Parsing Epic Games..."
-                            // Добавил User-Agent, так как Epic может блочить пустые запросы
                             def rawUrl = sh(script: "curl -s -A '${env.UA}' -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
                             if (rawUrl) {
                                 urls.add(rawUrl.split('\\?')[0])
@@ -156,7 +159,6 @@ pipeline {
                              echo ">>> Parsing Fraps..."
                              def frapsVer = sh(script: "curl -s https://fraps.com/download.php | grep -oP 'Fraps \\K[0-9.]+' | head -n 1", returnStdout: true).trim()
                              if (frapsVer) {
-                                 // ФИКС: название с маленькой буквы
                                  urls.add("https://beepa.com/free/setup.exe?name=fraps-${frapsVer}-setup.exe")
                                  mode = "SMART"
                              }
@@ -165,11 +167,11 @@ pipeline {
                         // --- 6. OPENVPN ---
                         else if (line.contains("openvpn.net")) {
                             echo ">>> Parsing OpenVPN..."
-                            // ФИКС: Добавлен ключ -k (insecure) на случай проблем с SSL и -L
-                            // Ищем на странице /client/ любую ссылку .msi
-                            def vpnUrl = sh(script: "curl -s -k -L -A '${env.UA}' 'https://openvpn.net/client/' | grep -oP 'href=\"\\K[^\"]+\\.msi' | grep 'openvpn' | grep 'x64' | head -n 1", returnStdout: true).trim()
+                            def vpnUrl = sh(script: "curl -s -k -L -A '${env.UA}' 'https://openvpn.net/client-connect-vpn-for-windows/' | grep -oP 'https://swupdate\\.openvpn\\.net/[^\"]+\\.msi' | head -n 1", returnStdout: true).trim()
+                            if (!vpnUrl) {
+                                vpnUrl = sh(script: "curl -s -k -L -A '${env.UA}' 'https://openvpn.net/client/' | grep -oP 'https://swupdate\\.openvpn\\.net/[^\"]+\\.msi' | head -n 1", returnStdout: true).trim()
+                            }
                             if (vpnUrl) {
-                                if (vpnUrl.startsWith("/")) vpnUrl = "https://openvpn.net" + vpnUrl
                                 urls.add(vpnUrl)
                                 mode = "SMART"
                             }
@@ -192,9 +194,7 @@ pipeline {
 
                                 if (directUrl) {
                                     def fName = webUrl.replace("/download", "").split('/').last()
-                                    // ФИКС HWInfo: удаляем точки только из тела имени, а .exe возвращаем
                                     if (line.contains("hwinfo")) {
-                                         // hwi64_8.16.exe -> hwi64_816.exe
                                          fName = fName.replace(".exe", "").replace(".", "") + ".exe"
                                     }
                                     
@@ -241,7 +241,6 @@ pipeline {
                                     echo "   [DOWN] Downloading ${fname}..."
                                     sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
                                     
-                                    // Проверка размера
                                     def fSize = sh(script: "wc -c < '${env.DL_DIR}/${fname}'", returnStdout: true).trim()
                                     if (fSize == "0" || fSize.toInteger() < 10000) {
                                         echo "   [FAIL] File too small (${fSize} bytes). Deleting."
