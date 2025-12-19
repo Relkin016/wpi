@@ -6,8 +6,8 @@ pipeline {
         LOG_FILE = "repos/web_log.log"
         GITHUB_LIST = "repos/github.txt"
         WEB_LIST = "repos/web.txt"
-        // ВАЖНО: Без скобок, чтобы не ломать bash
-        UA = "Mozilla/5.0 Windows NT 10.0 Win64 x64"
+        // ФИКС 1: Убрали пробелы и скобки. Теперь это одно слово для bash. Кавычки не нужны!
+        UA = "Mozilla/5.0_Windows_NT_10.0_Win64_x64"
     }
 
     stages {
@@ -18,6 +18,7 @@ pipeline {
                     sh "mkdir -p ${env.DL_DIR}"
                     sh "rm -f ${env.DL_DIR}/*.new"
                     sh "rm -f ${env.DL_DIR}/*.html"
+                    sh "rm -f tmp/*.json" // Чистим старые json
                     if (!fileExists(env.LOG_FILE)) {
                         sh "touch ${env.LOG_FILE}"
                     }
@@ -43,19 +44,23 @@ pipeline {
 
                         echo ">>> Checking: ${repo}"
 
-                        // ФИКС: Вернулись к одинарным кавычкам '...', так как в UA больше нет скобок
-                        // Это самая надежная конструкция для bash
-                        def jsonResponse = sh(script: "curl -s -H 'User-Agent: ${env.UA}' https://api.github.com/repos/${repo}/releases/latest", returnStdout: true).trim()
+                        // ФИКС 2: Качаем JSON сразу в файл. Никаких переменных и echo!
+                        // User-Agent передаем без кавычек, так как в нем теперь нет пробелов.
+                        sh "curl -s -H User-Agent:${env.UA} https://api.github.com/repos/${repo}/releases/latest -o tmp/gh_response.json"
+                        
+                        // Читаем файл в Groovy для проверки лимитов
+                        def jsonContent = readFile("tmp/gh_response.json").trim()
 
                         // Проверка на лимиты API
-                        if (jsonResponse.contains("API rate limit exceeded")) {
-                            error "GITHUB API LIMIT EXCEEDED! Response: \n${jsonResponse}"
+                        if (jsonContent.contains("API rate limit exceeded")) {
+                            error "GITHUB API LIMIT EXCEEDED! Response: \n${jsonContent}"
                         }
 
-                        def latestVersion = sh(script: "echo '${jsonResponse}' | jq -r .tag_name", returnStdout: true).trim()
+                        // ФИКС 3: jq читает из файла, а не из echo. Это безопасно для любых символов.
+                        def latestVersion = sh(script: "jq -r .tag_name tmp/gh_response.json", returnStdout: true).trim()
 
                         if (!latestVersion || latestVersion == "null") {
-                            echo "JSON Response: ${jsonResponse}"
+                            echo "JSON content: ${jsonContent}"
                             error "Failed to get version for ${repo}. Check regex or repo existence."
                         }
 
@@ -64,9 +69,9 @@ pipeline {
                         if (latestVersion != currentVersion) {
                             echo "UPDATE FOUND for ${repo}: ${currentVersion} -> ${latestVersion}"
                             
+                            // Снова читаем файл через jq
                             def downloadUrls = sh(script: """
-                                echo '${jsonResponse}' | \
-                                jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url'
+                                jq -r --arg REGEX "${regex}" '.assets[] | select(.name | test(\$REGEX; "i")) | .browser_download_url' tmp/gh_response.json
                             """, returnStdout: true).trim()
 
                             if (downloadUrls && downloadUrls != "null") {
@@ -136,8 +141,8 @@ pipeline {
                         // --- 3. EPIC GAMES ---
                         else if (line.contains("epicgames.com")) {
                             echo ">>> Parsing Epic Games..."
-                            // ФИКС: Одинарные кавычки '...'
-                            def rawUrl = sh(script: "curl -s -A '${env.UA}' -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
+                            // UA без кавычек и пробелов
+                            def rawUrl = sh(script: "curl -s -A ${env.UA} -o /dev/null -w '%{redirect_url}' '${line}'", returnStdout: true).trim()
                             if (rawUrl) {
                                 urls.add(rawUrl.split('\\?')[0])
                                 mode = "SMART"
@@ -173,8 +178,8 @@ pipeline {
                             def webUrl = sh(script: "curl -s '${rssLink}' | grep -o 'https://[^\"<]*\\(x64_setup\\|hwi64_[0-9]\\+\\)\\.exe/download' | head -n 1", returnStdout: true).trim()
                             
                             if (webUrl) {
-                                // ФИКС: Одинарные кавычки '...'
-                                sh "curl -L -s -A '${env.UA}' -o 'tmp/sf_temp.html' '${webUrl}'"
+                                // UA без кавычек
+                                sh "curl -L -s -A ${env.UA} -o 'tmp/sf_temp.html' '${webUrl}'"
                                 def directUrl = sh(script: "grep -oP 'https://downloads\\.sourceforge\\.net/[^\"]+' tmp/sf_temp.html | head -n 1", returnStdout: true).trim()
                                 sh "rm -f tmp/sf_temp.html"
 
@@ -209,8 +214,8 @@ pipeline {
                                 fname = java.net.URLDecoder.decode(rawName, "UTF-8")
                             }
 
-                            // ФИКС: Одинарные кавычки для хедера
-                            def headers = "-A '${env.UA}' -L"
+                            // Headers без кавычек в UA
+                            def headers = "-A ${env.UA} -L"
                             if (cleanUrl.contains("techpowerup.com")) headers += " -e 'https://www.techpowerup.com/'"
 
                             if (mode == "SMART") {
