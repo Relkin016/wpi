@@ -4,7 +4,6 @@ https://telegram.org/dl/desktop/win64
 https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi
 https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=ru
 https://fraps.com/download.php
-https://openvpn.net/client/
 https://www.qbittorrent.org/
 https://www.hwinfo.com/
 
