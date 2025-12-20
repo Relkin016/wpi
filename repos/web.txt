@@ -9,6 +9,5 @@ https://www.hwinfo.com/
 
 # === HASH CHECKS (Прямые ссылки) ===
 https://cdn.fastly.steamstatic.com/client/installer/SteamSetup.exe
-https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe
 https://openvpn.net/downloads/openvpn-connect-v3-windows.msi
 # TechPowerUp пока отключен, его тут нет
