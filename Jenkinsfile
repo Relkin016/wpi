@@ -11,15 +11,24 @@ pipeline {
     }
 
     stages {
+        // ==========================================
+        // 1. ПРЕДВАРИТЕЛЬНАЯ ОЧИСТКА
+        // ==========================================
         stage('Preparation') {
             steps {
                 script {
                     echo "--- [PREP] Preparing workspace ---"
+                    // ВАЖНО: При полной пересборке мы чистим папку загрузок,
+                    // чтобы там не осталось старого мусора, если версия понизилась.
                     sh "mkdir -p ${env.DL_DIR}"
                     sh "mkdir -p tmp"
-                    sh "rm -f ${env.DL_DIR}/*.new"
-                    sh "rm -f ${env.DL_DIR}/*.html"
+                    
+                    // Удаляем всё из папки загрузок, так как мы планируем качать всё заново
+                    // (Если обновлений не будет - папка останется пустой, и это ок, так как сборки ISO не будет)
+                    sh "rm -rf ${env.DL_DIR}/*"
+                    
                     sh "rm -f tmp/*.json"
+                    sh "rm -f tmp/*.check"
                     sh "rm -f ${env.QUEUE_FILE}"
                     
                     if (!fileExists(env.LOG_FILE)) {
@@ -29,15 +38,27 @@ pipeline {
             }
         }
 
+        // ==========================================
+        // 2. CHECK VERSIONS (СБОР ДАННЫХ И ПРОВЕРКА)
+        // ==========================================
         stage('Check Versions') {
             steps {
-                echo "--- [CHECK] Comparing remote versions with local log ---"
+                echo "--- [CHECK] Scanning all sources ---"
                 script {
                     def logLines = readFile(env.LOG_FILE).readLines()
-                    def updatesFound = false
-                    def addedToQueue = [] // Для предотвращения дублей в очереди (например, Steam)
+                    
+                    // Флаг: нужно ли запускать скачивание?
+                    def globalUpdateNeeded = false
+                    
+                    // В этот список мы собираем ВСЕ ссылки на ВСЕ программы.
+                    // Если globalUpdateNeeded станет true, мы скачаем весь этот список.
+                    def fullQueueList = [] 
+                    
+                    def addedNames = [] // Чтобы избегать дублей (напр. Steam)
 
-                    // --- GITHUB ---
+                    // ------------------------------------------------
+                    // ЧАСТЬ A: GITHUB (Собираем инфо по всем репо)
+                    // ------------------------------------------------
                     if (fileExists(env.GITHUB_LIST)) {
                         def ghLines = readFile(env.GITHUB_LIST).readLines()
                         ghLines.each { line ->
@@ -48,6 +69,7 @@ pipeline {
                                 def regex = parts[1].trim()
                                 def repo = url.replace("https://github.com/", "").replace(/\/$/, "")
 
+                                // Качаем JSON
                                 sh "curl -s -H User-Agent:${env.UA} https://api.github.com/repos/${repo}/releases/latest -o tmp/gh_${repo.replace('/', '_')}.json"
                                 def jsonFile = "tmp/gh_${repo.replace('/', '_')}.json"
                                 
@@ -56,19 +78,28 @@ pipeline {
                                 def latestVer = sh(script: "jq -r .tag_name ${jsonFile}", returnStdout: true).trim()
                                 if (!latestVer || latestVer == "null") return
 
-                                if (!logLines.any { it.contains("${repo}|${latestVer}|") }) {
-                                    def dUrl = sh(script: "jq -r --arg REGEX \"${regex}\" '.assets[] | select(.name | test(\$REGEX; \"i\")) | .browser_download_url' ${jsonFile} | head -n 1", returnStdout: true).trim()
-                                    if (dUrl && dUrl != "null") {
-                                        echo "   [UPDATE] GitHub: ${repo} (${latestVer})"
-                                        updatesFound = true
-                                        sh "echo 'GITHUB|${repo}|${latestVer}|${dUrl}' >> ${env.QUEUE_FILE}"
+                                // Получаем ссылку ВСЕГДА (даже если версия совпадает)
+                                def dUrl = sh(script: "jq -r --arg REGEX \"${regex}\" '.assets[] | select(.name | test(\$REGEX; \"i\")) | .browser_download_url' ${jsonFile} | head -n 1", returnStdout: true).trim()
+                                
+                                if (dUrl && dUrl != "null") {
+                                    // Добавляем в общий список
+                                    fullQueueList.add("GITHUB|${repo}|${latestVer}|${dUrl}")
+
+                                    // ПРОВЕРКА: Отличается ли версия от лога?
+                                    if (!logLines.any { it.contains("${repo}|${latestVer}|") }) {
+                                        echo "   [UPDATE DETECTED] GitHub: ${repo} (${latestVer})"
+                                        globalUpdateNeeded = true
+                                    } else {
+                                        echo "   [OK] GitHub: ${repo} (${latestVer})"
                                     }
                                 }
                             } catch (e) { echo "   [ERR] ${line}: ${e.message}" }
                         }
                     }
 
-                    // --- WEB ---
+                    // ------------------------------------------------
+                    // ЧАСТЬ B: WEB (Собираем инфо по всем сайтам)
+                    // ------------------------------------------------
                     if (fileExists(env.WEB_LIST)) {
                         def webLines = readFile(env.WEB_LIST).readLines()
                         webLines.each { line ->
@@ -77,6 +108,7 @@ pipeline {
                                 def dUrls = []
                                 def mode = "SMART"
                                 
+                                // --- ПАРСИНГ ---
                                 if (line.contains("videolan.org")) {
                                     def raw = sh(script: "curl -s https://download.videolan.org/pub/videolan/vlc/last/win64/ | grep -oP 'href=\"\\Kvlc-[0-9.]+-win64\\.exe' | head -n 1", returnStdout: true).trim()
                                     if (raw) {
@@ -115,57 +147,120 @@ pipeline {
                                         }
                                     }
                                 }
-                                else { dUrls.add(line.trim()); mode = "HASH" }
+                                else { 
+                                    dUrls.add(line.trim())
+                                    mode = "HASH" 
+                                }
 
+                                // --- ОБРАБОТКА ССЫЛОК ---
                                 dUrls.each { url ->
                                     if (!url || url == "null") return
-                                    def fname = url.contains("?name=") ? url.split("\\?name=")[1] : java.net.URLDecoder.decode(url.split('/').last().split('\\?')[0], "UTF-8")
-                                    if (fname == "client" || fname == "download" || addedToQueue.contains(fname)) return
+                                    
+                                    def fname = ""
+                                    def cleanUrl = ""
+                                    if (url.contains("?name=")) {
+                                        def p = url.split("\\?name=")
+                                        cleanUrl = p[0]; fname = p[1]
+                                    } else {
+                                        cleanUrl = url
+                                        def rawName = cleanUrl.split('/').last().split('\\?')[0]
+                                        fname = java.net.URLDecoder.decode(rawName, "UTF-8")
+                                    }
+
+                                    if (fname == "client" || fname == "download" || addedNames.contains(fname)) return
 
                                     if (mode == "SMART") {
+                                        // Добавляем в список ВСЕГДА
+                                        fullQueueList.add("WEB|${fname}|SMART|${url}")
+                                        
+                                        // Проверяем по логу
                                         if (!logLines.any { it.contains("|${fname}|") }) {
-                                            echo "   [UPDATE] Web: ${fname}"
-                                            updatesFound = true; addedToQueue.add(fname)
-                                            sh "echo 'WEB|${fname}|SMART|${url}' >> ${env.QUEUE_FILE}"
+                                            echo "   [UPDATE DETECTED] Web: ${fname}"
+                                            globalUpdateNeeded = true
+                                        } else {
+                                            echo "   [OK] Web: ${fname}"
                                         }
                                     } else {
-                                        echo "   [HASH CHECK] ${fname}..."
-                                        sh "curl -s -L -A ${env.UA} -o 'tmp/${fname}.check' '${url}'"
+                                        // HASH CHECK MODE (Steam, OpenVPN)
+                                        // Нам нужно скачать файл для проверки хеша.
+                                        // Если глобальный апдейт УЖЕ нужен, можно не качать? Нет, нам нужен актуальный хеш.
+                                        
+                                        echo "   [CHECKING HASH] ${fname}..."
+                                        def headers = "-A ${env.UA} -L"
+                                        if (cleanUrl.contains("techpowerup")) headers += " -e 'https://www.techpowerup.com/'"
+                                        
+                                        sh "curl -s ${headers} -o 'tmp/${fname}.check' '${cleanUrl}'"
                                         def newHash = sh(script: "sha256sum 'tmp/${fname}.check' | awk '{print \$1}'", returnStdout: true).trim()
+                                        
+                                        // ВАЖНО: Добавляем в очередь как "MOVE", так как мы уже скачали файл в .check
+                                        // Это сэкономит трафик при полной загрузке
+                                        fullQueueList.add("HASH_MOVE|${fname}|${newHash}|tmp/${fname}.check")
+                                        
                                         if (!logLines.any { it.contains("|${fname}|${newHash}|") }) {
-                                            echo "   [UPDATE] Hash mismatch: ${fname}"
-                                            updatesFound = true; addedToQueue.add(fname)
-                                            sh "echo 'HASH_MOVE|${fname}|${newHash}|tmp/${fname}.check' >> ${env.QUEUE_FILE}"
-                                        } else { sh "rm 'tmp/${fname}.check'" }
+                                            echo "   [UPDATE DETECTED] Hash mismatch: ${fname}"
+                                            globalUpdateNeeded = true
+                                        } else {
+                                            echo "   [OK] Hash match: ${fname}"
+                                        }
                                     }
+                                    addedNames.add(fname)
                                 }
                             } catch (e) { echo "   [ERR] Web: ${e.message}" }
                         }
                     }
-                    if (!updatesFound) { echo "NO UPDATES FOUND."; currentBuild.result = 'SUCCESS' }
+
+                    // ------------------------------------------------
+                    // ФИНАЛЬНОЕ РЕШЕНИЕ
+                    // ------------------------------------------------
+                    if (!globalUpdateNeeded) {
+                        echo "\n=============================================="
+                        echo "NO UPDATES FOUND. SYSTEM IS UP TO DATE."
+                        echo "Exiting pipeline early. No downloads needed."
+                        echo "=============================================="
+                        currentBuild.result = 'SUCCESS'
+                    } else {
+                        echo "\n>>> UPDATES DETECTED! TRIGGERING FULL DOWNLOAD..."
+                        echo ">>> Queue size: ${fullQueueList.size()} items."
+                        
+                        // Записываем ПОЛНЫЙ список в файл очереди
+                        writeFile file: env.QUEUE_FILE, text: fullQueueList.join("\n") + "\n"
+                    }
                 }
             }
         }
 
+        // ==========================================
+        // 3. DOWNLOAD GITHUB (ПОЛНАЯ ЗАГРУЗКА)
+        // ==========================================
         stage('Download GitHub') {
             when { expression { fileExists(env.QUEUE_FILE) } }
             steps {
                 script {
                     def queue = readFile(env.QUEUE_FILE).readLines()
                     def logLines = readFile(env.LOG_FILE).readLines()
+
                     queue.each { item ->
                         def parts = item.split('\\|')
                         if (parts[0] == 'GITHUB') {
-                            def repo = parts[1], version = parts[2], url = parts[3]
+                            def repo = parts[1]
+                            def version = parts[2]
+                            def url = parts[3]
                             def fname = url.split('/').last()
-                            echo ">>> [DOWN] GitHub: ${fname}"
+
+                            echo ">>> [DOWNLOADING] GitHub: ${fname}"
                             sh "wget -qP ${env.DL_DIR} '${url}'"
+
                             if (fname.endsWith(".zip")) {
                                 def folder = fname.replace('.zip', '')
-                                sh "mkdir -p ${env.DL_DIR}/${folder} && unzip -o ${env.DL_DIR}/${fname} -d ${env.DL_DIR}/${folder}/ && rm ${env.DL_DIR}/${fname}"
+                                sh "mkdir -p ${env.DL_DIR}/${folder}"
+                                sh "unzip -o ${env.DL_DIR}/${fname} -d ${env.DL_DIR}/${folder}/"
+                                sh "rm ${env.DL_DIR}/${fname}"
                             }
+
+                            // Обновляем лог
                             logLines.removeAll { it.startsWith("${repo}|") }
-                            logLines.add("${repo}|${version}|${sh(script: 'date +%Y-%m-%d', returnStdout: true).trim()}")
+                            def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
+                            logLines.add("${repo}|${version}|${dateNow}")
                         }
                     }
                     writeFile file: env.LOG_FILE, text: logLines.join("\n") + "\n"
@@ -173,32 +268,50 @@ pipeline {
             }
         }
 
+        // ==========================================
+        // 4. DOWNLOAD WEB (ПОЛНАЯ ЗАГРУЗКА)
+        // ==========================================
         stage('Download Web') {
             when { expression { fileExists(env.QUEUE_FILE) } }
             steps {
                 script {
                     def queue = readFile(env.QUEUE_FILE).readLines()
                     def logLines = readFile(env.LOG_FILE).readLines()
+
                     queue.each { item ->
                         def parts = item.split('\\|')
+                        
                         if (parts[0] == 'WEB') {
-                            def fname = parts[1], url = parts[3]
-                            echo ">>> [DOWN] Web: ${fname}"
+                            def fname = parts[1]
+                            def url = parts[3]
                             def cleanUrl = url.contains("?name=") ? url.split("\\?name=")[0] : url
-                            sh "curl -s -L -A ${env.UA} -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
+
+                            echo ">>> [DOWNLOADING] Web: ${fname}"
+                            def headers = "-A ${env.UA} -L"
+                            if (cleanUrl.contains("techpowerup")) headers += " -e 'https://www.techpowerup.com/'"
+                            
+                            sh "curl -s ${headers} -o '${env.DL_DIR}/${fname}' '${cleanUrl}'"
+                            
                             logLines.removeAll { it.contains("|${fname}|") }
-                            logLines.add("WEB-SMART|${fname}|${sh(script: 'date +%Y-%m-%d', returnStdout: true).trim()}")
+                            def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
+                            logLines.add("WEB-SMART|${fname}|${dateNow}")
                         }
                         else if (parts[0] == 'HASH_MOVE') {
-                            def fname = parts[1], hash = parts[2], tmpPath = parts[3]
-                            echo ">>> [SAVE] Hash Verified: ${fname}"
+                            def fname = parts[1]
+                            def hash = parts[2]
+                            def tmpPath = parts[3]
+
+                            echo ">>> [SAVING] From Check Cache: ${fname}"
                             sh "mv '${tmpPath}' '${env.DL_DIR}/${fname}'"
+                            
                             logLines.removeAll { it.contains("|${fname}|") }
-                            logLines.add("WEB-HASH|${fname}|${hash}|${sh(script: 'date +%Y-%m-%d', returnStdout: true).trim()}")
+                            def dateNow = sh(script: "date +%Y-%m-%d", returnStdout: true).trim()
+                            logLines.add("WEB-HASH|${fname}|${hash}|${dateNow}")
                         }
                     }
                     writeFile file: env.LOG_FILE, text: logLines.join("\n") + "\n"
-                    sh "rm -f tmp/*.check tmp/sf_check.html" // Финальная чистка
+                    // Финальная чистка
+                    sh "rm -f tmp/*.check tmp/sf_check.html"
                 }
             }
         }
