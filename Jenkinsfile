@@ -163,8 +163,8 @@ pipeline {
             }
         }
 
-        // ------------------------------------------
-        // 3. DOWNLOAD STATIC FILES (EOL)
+// ------------------------------------------
+        // 3. DOWNLOAD STATIC FILES (EOL) [FIXED]
         // ------------------------------------------
         stage('Download Static (EOL)') {
             when { expression { fileExists(env.QUEUE_FILE) } }
@@ -173,28 +173,32 @@ pipeline {
                     echo ">>> [DOWN] Downloading Split Static Archives..."
                     sh "mkdir -p tmp/static_temp"
                     
-                    // Скачиваем 7 частей с GitHub (Raw ссылки)
-                    // Используем main ветку
+                    // 1. Скачиваем архивы (части)
                     for (int i = 1; i <= 7; i++) {
                         sh "wget -qP tmp/static_temp https://github.com/Relkin016/file/raw/main/EOL.7z.00${i}"
                     }
                     
-                    echo ">>> [EXTRACT] Unpacking 7z..."
-                    // Распаковываем первый том, 7z подхватит остальные.
-                    // -y : отвечать Да
-                    // -o : папка назначения (слитно с флагом)
-                    // ТРЕБУЕТСЯ: apt install p7zip-full
-                    sh "7z x tmp/static_temp/EOL.7z.001 -o${env.DL_DIR} -y"
+                    echo ">>> [SETUP] Downloading portable 7-Zip..."
+                    // 2. Скачиваем сам архиватор 7z (Linux x64), раз его нет в системе
+                    sh "mkdir -p tmp/7z_tool"
+                    sh "wget -qO tmp/7z_tool/7z.tar.xz https://www.7-zip.org/a/7z2301-linux-x64.tar.xz"
+                    // Распаковываем утилиту (tar есть везде)
+                    sh "tar -xf tmp/7z_tool/7z.tar.xz -C tmp/7z_tool"
                     
-                    // Чистим временные архивы
+                    echo ">>> [EXTRACT] Unpacking via portable 7zz..."
+                    // 3. Используем скачанный ./7zzs для распаковки
+                    // 7zzs - это статически скомпилированная версия, работает везде
+                    sh "tmp/7z_tool/7zzs x tmp/static_temp/EOL.7z.001 -o${env.DL_DIR} -y"
+                    
+                    // 4. Чистим мусор (архивы и сам инструмент)
                     sh "rm -rf tmp/static_temp"
+                    sh "rm -rf tmp/7z_tool"
                     
-                    // Проверка, что файлы появились (для лога)
+                    // Проверка
                     sh "ls -lh ${env.DL_DIR} | grep -E 'DirectX|Unlocker|unchecky|Net'"
                 }
             }
         }
-
         // ------------------------------------------
         // 4. DOWNLOAD GITHUB
         // ------------------------------------------

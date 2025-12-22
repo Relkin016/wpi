@@ -1,3 +1,3 @@
 sudo apt update
-sudo apt install genisoimage curl jq wget zip
+sudo apt install genisoimage curl jq wget p7zip-full
 
